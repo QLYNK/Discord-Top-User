@@ -95,7 +95,7 @@ def build_slug(name: str) -> str:
     Generates a URL-safe slug from *name* with 6 random hex chars appended,
     following the same logic as the JS proxy's `buildSlug`.
     """
-    sanitized = re.sub(r"[^a-z0-9\-]", "", name.lower().replace(" ", "-").replace("_", "-"))
+    sanitized = re.sub(r"[^a-z0-9-]", "", name.lower().replace(" ", "-").replace("_", "-"))
     sanitized = sanitized[:40].strip("-")
     suffix = secrets.token_hex(3)  # 6 hex characters
     return f"{sanitized}-{suffix}" if sanitized else suffix

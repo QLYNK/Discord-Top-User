@@ -7,7 +7,7 @@ queue with cryptographic randomness, 24/7 mode, and live dashboard.
 import asyncio
 import secrets
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 import discord
@@ -358,7 +358,7 @@ class MusicCommands(commands.Cog):
                         "url": link,
                         "name": track_name,
                         "permanent": True,
-                        "added_at": datetime.utcnow(),
+                        "added_at": datetime.now(timezone.utc),
                     }
                 },
                 upsert=True,
@@ -404,7 +404,7 @@ class MusicCommands(commands.Cog):
                     "url": cdn_url,
                     "name": original_name,
                     "permanent": False,
-                    "added_at": datetime.utcnow(),
+                    "added_at": datetime.now(timezone.utc),
                 }
             },
             upsert=True,
