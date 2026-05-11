@@ -33,11 +33,11 @@ PASSWORD = os.getenv("PASSWORD")
 SPACE_PASSWORD = os.getenv("SPACE_PASSWORD")
 RENDER_PUBLIC_URL = "https://deepdey.onrender.com"
 
-mongo_client = MongoClient(MONGO_URI) if MONGO_URI else None
-music_col = mongo_client["LeaderboardBotDB"]["MusicTracks"] if mongo_client else None
-keywords_col = mongo_client["LeaderboardBotDB"]["GameKeywords"] if mongo_client else None
-tad_col = mongo_client["LeaderboardBotDB"]["TruthOrDare"] if mongo_client else None
-quiz_col = mongo_client["LeaderboardBotDB"]["QuizQuestions"] if mongo_client else None
+sync_mongo_client = MongoClient(MONGO_URI, connect=True, serverSelectionTimeoutMS=5000) if MONGO_URI else None
+music_col = sync_mongo_client["LeaderboardBotDB"]["MusicTracks"] if sync_mongo_client else None
+keywords_col = sync_mongo_client["LeaderboardBotDB"]["GameKeywords"] if sync_mongo_client else None
+tad_col = sync_mongo_client["LeaderboardBotDB"]["TruthOrDare"] if sync_mongo_client else None
+quiz_col = sync_mongo_client["LeaderboardBotDB"]["QuizQuestions"] if sync_mongo_client else None
 UPLOAD_ID_PATTERN = r"^[a-fA-F0-9-]{8,64}$"
 MAX_CHUNKS = 4096
 CHUNK_SIZE_BYTES = 10 * 1024 * 1024
@@ -92,12 +92,24 @@ def _require_utilities_auth(func):
     return wrapper
 
 
+def _api_json_guard(func):
+    @wraps(func)
+    def wrapper(*args, **kwargs):
+        try:
+            return func(*args, **kwargs)
+        except Exception as exc:
+            return jsonify({"error": str(exc)}), 500
+
+    return wrapper
+
+
 @app.route("/")
 def home():
     return render_template_string(_HOME_HTML)
 
 
 @app.route("/api/stats")
+@_api_json_guard
 def stats():
     try:
         with open("stats.json", "r") as f:
@@ -131,6 +143,7 @@ def music_dashboard():
 
 
 @app.route("/api/music/tracks", methods=["GET"])
+@_api_json_guard
 @_require_music_auth
 def list_tracks():
     if not music_col:
@@ -151,6 +164,7 @@ def list_tracks():
 
 
 @app.route("/api/music/tracks/<track_id>", methods=["PUT"])
+@_api_json_guard
 @_require_music_auth
 def edit_track(track_id: str):
     if not music_col:
@@ -172,7 +186,34 @@ def edit_track(track_id: str):
     return jsonify({"ok": True})
 
 
+@app.route("/api/music/edit", methods=["POST"])
+@_api_json_guard
+@_require_music_auth
+def edit_track_post():
+    if not music_col:
+        return jsonify({"error": "MONGO_URI is not configured"}), 500
+
+    data = request.get_json(silent=True) or {}
+    track_id = (data.get("id") or data.get("track_id") or "").strip()
+    title = (data.get("title") or "").strip()
+    artwork_url = (data.get("artwork_url") or "").strip() or DEFAULT_ARTWORK
+
+    if not track_id:
+        return jsonify({"error": "track_id is required"}), 400
+    if not title:
+        return jsonify({"error": "title is required"}), 400
+
+    result = music_col.update_one(
+        _coerce_id_query(track_id),
+        {"$set": {"title": title, "name": title, "artwork_url": artwork_url}},
+    )
+    if result.matched_count == 0:
+        return jsonify({"error": "Track not found"}), 404
+    return jsonify({"ok": True})
+
+
 @app.route("/api/music/tracks/<track_id>", methods=["DELETE"])
+@_api_json_guard
 @_require_music_auth
 def delete_track(track_id: str):
     if not music_col:
@@ -185,6 +226,7 @@ def delete_track(track_id: str):
 
 
 @app.route("/api/music/process", methods=["POST"])
+@_api_json_guard
 @_require_music_auth
 def process_music():
     if not music_col:
@@ -325,6 +367,7 @@ def utilities_dashboard():
 # ── Utilities CRUD: Keywords ───────────────────────────────────────────────
 
 @app.route("/api/utilities/keywords", methods=["GET"])
+@_api_json_guard
 @_require_utilities_auth
 def list_keywords():
     if not keywords_col:
@@ -334,6 +377,7 @@ def list_keywords():
 
 
 @app.route("/api/utilities/keywords", methods=["POST"])
+@_api_json_guard
 @_require_utilities_auth
 def create_keyword():
     if not keywords_col:
@@ -348,6 +392,7 @@ def create_keyword():
 
 
 @app.route("/api/utilities/keywords/<kw_id>", methods=["PUT"])
+@_api_json_guard
 @_require_utilities_auth
 def update_keyword(kw_id: str):
     if not keywords_col:
@@ -362,6 +407,7 @@ def update_keyword(kw_id: str):
 
 
 @app.route("/api/utilities/keywords/<kw_id>", methods=["DELETE"])
+@_api_json_guard
 @_require_utilities_auth
 def delete_keyword(kw_id: str):
     if not keywords_col:
@@ -373,6 +419,7 @@ def delete_keyword(kw_id: str):
 # ── Utilities CRUD: Truth or Dare ─────────────────────────────────────────
 
 @app.route("/api/utilities/tad", methods=["GET"])
+@_api_json_guard
 @_require_utilities_auth
 def list_tad():
     if not tad_col:
@@ -382,6 +429,7 @@ def list_tad():
 
 
 @app.route("/api/utilities/tad", methods=["POST"])
+@_api_json_guard
 @_require_utilities_auth
 def create_tad():
     if not tad_col:
@@ -396,6 +444,7 @@ def create_tad():
 
 
 @app.route("/api/utilities/tad/<tad_id>", methods=["DELETE"])
+@_api_json_guard
 @_require_utilities_auth
 def delete_tad(tad_id: str):
     if not tad_col:
@@ -407,6 +456,7 @@ def delete_tad(tad_id: str):
 # ── Utilities CRUD: Quiz ──────────────────────────────────────────────────
 
 @app.route("/api/utilities/quiz", methods=["GET"])
+@_api_json_guard
 @_require_utilities_auth
 def list_quiz():
     if not quiz_col:
@@ -416,6 +466,7 @@ def list_quiz():
 
 
 @app.route("/api/utilities/quiz", methods=["POST"])
+@_api_json_guard
 @_require_utilities_auth
 def create_quiz():
     if not quiz_col:
@@ -431,6 +482,7 @@ def create_quiz():
 
 
 @app.route("/api/utilities/quiz/<quiz_id>", methods=["DELETE"])
+@_api_json_guard
 @_require_utilities_auth
 def delete_quiz(quiz_id: str):
     if not quiz_col:
