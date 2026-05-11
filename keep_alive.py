@@ -35,6 +35,9 @@ RENDER_PUBLIC_URL = "https://deepdey.onrender.com"
 
 mongo_client = MongoClient(MONGO_URI) if MONGO_URI else None
 music_col = mongo_client["LeaderboardBotDB"]["MusicTracks"] if mongo_client else None
+keywords_col = mongo_client["LeaderboardBotDB"]["GameKeywords"] if mongo_client else None
+tad_col = mongo_client["LeaderboardBotDB"]["TruthOrDare"] if mongo_client else None
+quiz_col = mongo_client["LeaderboardBotDB"]["QuizQuestions"] if mongo_client else None
 UPLOAD_ID_PATTERN = r"^[a-fA-F0-9-]{8,64}$"
 MAX_CHUNKS = 4096
 CHUNK_SIZE_BYTES = 10 * 1024 * 1024
@@ -59,9 +62,23 @@ def _require_music_auth(func):
     return wrapper
 
 
+def _require_utilities_auth(func):
+    @wraps(func)
+    def wrapper(*args, **kwargs):
+        if not PASSWORD:
+            return jsonify({"error": "PASSWORD env var is not configured"}), 500
+        if not session.get("utilities_auth"):
+            if request.path.startswith("/api/"):
+                return jsonify({"error": "Unauthorized"}), 401
+            return redirect("/utilities/login")
+        return func(*args, **kwargs)
+
+    return wrapper
+
+
 @app.route("/")
 def home():
-    return "Bot is awake!"
+    return render_template_string(_HOME_HTML)
 
 
 @app.route("/api/stats")
@@ -266,6 +283,148 @@ def _handle_chunk_flow(tmp_dir: Path):
 
 def run():
     app.run(host="0.0.0.0", port=8080)
+
+
+# ── Utilities auth routes ──────────────────────────────────────────────────
+
+@app.route("/utilities/login", methods=["GET", "POST"])
+def utilities_login():
+    if request.method == "POST":
+        submitted = request.form.get("password", "")
+        if PASSWORD and secrets.compare_digest(submitted, PASSWORD):
+            session["utilities_auth"] = True
+            return redirect("/utilities")
+        return render_template_string(_UTILITIES_LOGIN_HTML, error="Invalid password")
+    return render_template_string(_UTILITIES_LOGIN_HTML, error=None)
+
+
+@app.route("/utilities/logout")
+def utilities_logout():
+    session.pop("utilities_auth", None)
+    return redirect("/utilities/login")
+
+
+@app.route("/utilities")
+@_require_utilities_auth
+def utilities_dashboard():
+    return render_template_string(_UTILITIES_HTML)
+
+
+# ── Utilities CRUD: Keywords ───────────────────────────────────────────────
+
+@app.route("/api/utilities/keywords", methods=["GET"])
+@_require_utilities_auth
+def list_keywords():
+    if not keywords_col:
+        return jsonify({"error": "MONGO_URI is not configured"}), 500
+    docs = list(keywords_col.find({}, {"trigger": 1, "reply": 1}))
+    return jsonify({"keywords": [{"id": str(d["_id"]), "trigger": d.get("trigger", ""), "reply": d.get("reply", "")} for d in docs]})
+
+
+@app.route("/api/utilities/keywords", methods=["POST"])
+@_require_utilities_auth
+def create_keyword():
+    if not keywords_col:
+        return jsonify({"error": "MONGO_URI is not configured"}), 500
+    data = request.get_json(silent=True) or {}
+    trigger = (data.get("trigger") or "").strip().lower()
+    reply = (data.get("reply") or "").strip()
+    if not trigger or not reply:
+        return jsonify({"error": "trigger and reply are required"}), 400
+    inserted = keywords_col.insert_one({"trigger": trigger, "reply": reply})
+    return jsonify({"ok": True, "id": str(inserted.inserted_id)})
+
+
+@app.route("/api/utilities/keywords/<kw_id>", methods=["PUT"])
+@_require_utilities_auth
+def update_keyword(kw_id: str):
+    if not keywords_col:
+        return jsonify({"error": "MONGO_URI is not configured"}), 500
+    data = request.get_json(silent=True) or {}
+    trigger = (data.get("trigger") or "").strip().lower()
+    reply = (data.get("reply") or "").strip()
+    if not trigger or not reply:
+        return jsonify({"error": "trigger and reply are required"}), 400
+    keywords_col.update_one({"_id": ObjectId(kw_id)}, {"$set": {"trigger": trigger, "reply": reply}})
+    return jsonify({"ok": True})
+
+
+@app.route("/api/utilities/keywords/<kw_id>", methods=["DELETE"])
+@_require_utilities_auth
+def delete_keyword(kw_id: str):
+    if not keywords_col:
+        return jsonify({"error": "MONGO_URI is not configured"}), 500
+    keywords_col.delete_one({"_id": ObjectId(kw_id)})
+    return jsonify({"ok": True})
+
+
+# ── Utilities CRUD: Truth or Dare ─────────────────────────────────────────
+
+@app.route("/api/utilities/tad", methods=["GET"])
+@_require_utilities_auth
+def list_tad():
+    if not tad_col:
+        return jsonify({"error": "MONGO_URI is not configured"}), 500
+    docs = list(tad_col.find({}, {"type": 1, "text": 1}))
+    return jsonify({"tad": [{"id": str(d["_id"]), "type": d.get("type", ""), "text": d.get("text", "")} for d in docs]})
+
+
+@app.route("/api/utilities/tad", methods=["POST"])
+@_require_utilities_auth
+def create_tad():
+    if not tad_col:
+        return jsonify({"error": "MONGO_URI is not configured"}), 500
+    data = request.get_json(silent=True) or {}
+    tad_type = (data.get("type") or "").strip().lower()
+    text = (data.get("text") or "").strip()
+    if tad_type not in ("truth", "dare") or not text:
+        return jsonify({"error": "type (truth|dare) and text are required"}), 400
+    inserted = tad_col.insert_one({"type": tad_type, "text": text})
+    return jsonify({"ok": True, "id": str(inserted.inserted_id)})
+
+
+@app.route("/api/utilities/tad/<tad_id>", methods=["DELETE"])
+@_require_utilities_auth
+def delete_tad(tad_id: str):
+    if not tad_col:
+        return jsonify({"error": "MONGO_URI is not configured"}), 500
+    tad_col.delete_one({"_id": ObjectId(tad_id)})
+    return jsonify({"ok": True})
+
+
+# ── Utilities CRUD: Quiz ──────────────────────────────────────────────────
+
+@app.route("/api/utilities/quiz", methods=["GET"])
+@_require_utilities_auth
+def list_quiz():
+    if not quiz_col:
+        return jsonify({"error": "MONGO_URI is not configured"}), 500
+    docs = list(quiz_col.find({}, {"question": 1, "options": 1, "correct_answer": 1}))
+    return jsonify({"quiz": [{"id": str(d["_id"]), "question": d.get("question", ""), "options": d.get("options", []), "correct_answer": d.get("correct_answer", "")} for d in docs]})
+
+
+@app.route("/api/utilities/quiz", methods=["POST"])
+@_require_utilities_auth
+def create_quiz():
+    if not quiz_col:
+        return jsonify({"error": "MONGO_URI is not configured"}), 500
+    data = request.get_json(silent=True) or {}
+    question = (data.get("question") or "").strip()
+    options = [str(o).strip() for o in (data.get("options") or []) if str(o).strip()]
+    correct_answer = (data.get("correct_answer") or "").strip()
+    if not question or len(options) != 4 or not correct_answer or correct_answer not in options:
+        return jsonify({"error": "question, exactly 4 options, and a valid correct_answer are required"}), 400
+    inserted = quiz_col.insert_one({"question": question, "options": options, "correct_answer": correct_answer})
+    return jsonify({"ok": True, "id": str(inserted.inserted_id)})
+
+
+@app.route("/api/utilities/quiz/<quiz_id>", methods=["DELETE"])
+@_require_utilities_auth
+def delete_quiz(quiz_id: str):
+    if not quiz_col:
+        return jsonify({"error": "MONGO_URI is not configured"}), 500
+    quiz_col.delete_one({"_id": ObjectId(quiz_id)})
+    return jsonify({"ok": True})
 
 
 def crypto_self_ping():
@@ -483,6 +642,317 @@ dropZone.addEventListener('drop', async e => {
 });
 
 refreshTracks();
+</script>
+</body>
+</html>
+"""
+
+
+_HOME_HTML = """
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Bot Dashboard</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-[#1e1f22] text-[#dbdee1] min-h-screen grid place-items-center">
+  <div class="max-w-xl w-full p-6 space-y-6 text-center">
+    <h1 class="text-4xl font-bold text-white">🤖 Bot Dashboard</h1>
+    <p class="text-[#949ba4]">Select a section to manage:</p>
+    <div class="grid grid-cols-2 gap-6">
+      <a href="/music" class="bg-[#2b2d31] hover:bg-[#383a40] border border-[#5865F2] rounded-2xl p-8 flex flex-col items-center gap-3 transition">
+        <span class="text-5xl">🎵</span>
+        <span class="text-xl font-semibold">Music</span>
+        <span class="text-sm text-[#949ba4]">Manage tracks & uploads</span>
+      </a>
+      <a href="/utilities" class="bg-[#2b2d31] hover:bg-[#383a40] border border-[#5865F2] rounded-2xl p-8 flex flex-col items-center gap-3 transition">
+        <span class="text-5xl">🎮</span>
+        <span class="text-xl font-semibold">Utilities</span>
+        <span class="text-sm text-[#949ba4]">Keywords, TAD & Quiz</span>
+      </a>
+    </div>
+    <p class="text-xs text-[#949ba4]">an app by <a href="https://deepdey.vercel.app/" class="underline hover:text-white">deep</a></p>
+  </div>
+</body>
+</html>
+"""
+
+
+_UTILITIES_LOGIN_HTML = """
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Utilities Login</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-[#1e1f22] text-white min-h-screen grid place-items-center">
+  <form method="post" class="w-full max-w-sm bg-[#2b2d31] p-6 rounded-xl border border-[#3f4147]">
+    <h1 class="text-2xl font-bold mb-4">Utilities Dashboard Login</h1>
+    {% if error %}<p class="text-red-400 text-sm mb-3">{{ error }}</p>{% endif %}
+    <input type="password" name="password" placeholder="Enter PASSWORD" class="w-full p-3 rounded bg-[#1e1f22] border border-[#3f4147]" required />
+    <button class="mt-4 w-full p-3 rounded bg-indigo-600 hover:bg-indigo-500">Login</button>
+  </form>
+</body>
+</html>
+"""
+
+
+_UTILITIES_HTML = """
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Utilities Dashboard</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-[#1e1f22] text-[#dbdee1] min-h-screen">
+  <div class="max-w-5xl mx-auto p-6 space-y-8">
+    <div class="flex items-center justify-between">
+      <h1 class="text-3xl font-bold">🎮 Utilities Dashboard</h1>
+      <div class="flex gap-3">
+        <a href="/" class="px-4 py-2 rounded bg-[#3f4147] hover:bg-[#4e5058]">Home</a>
+        <a href="/utilities/logout" class="px-4 py-2 rounded bg-red-600 hover:bg-red-500">Logout</a>
+      </div>
+    </div>
+
+    <!-- Tabs -->
+    <div class="flex gap-2 border-b border-[#3f4147]">
+      <button onclick="showTab('keywords')" id="tab-keywords" class="tab-btn px-4 py-2 rounded-t bg-indigo-600 text-white">Keywords</button>
+      <button onclick="showTab('tad')" id="tab-tad" class="tab-btn px-4 py-2 rounded-t bg-[#2b2d31] hover:bg-[#3f4147]">Truth or Dare</button>
+      <button onclick="showTab('quiz')" id="tab-quiz" class="tab-btn px-4 py-2 rounded-t bg-[#2b2d31] hover:bg-[#3f4147]">Quiz</button>
+    </div>
+
+    <!-- Keywords Panel -->
+    <div id="panel-keywords" class="space-y-4">
+      <div class="bg-[#2b2d31] p-4 rounded-xl border border-[#3f4147] space-y-3">
+        <h2 class="text-xl font-semibold">Add Auto-Reply Keyword</h2>
+        <div class="grid md:grid-cols-2 gap-3">
+          <input id="kwTrigger" class="p-3 rounded bg-[#1e1f22] border border-[#3f4147]" placeholder="Trigger word/phrase" />
+          <input id="kwReply" class="p-3 rounded bg-[#1e1f22] border border-[#3f4147]" placeholder="Bot reply text" />
+        </div>
+        <button onclick="createKeyword()" class="px-4 py-2 rounded bg-indigo-600 hover:bg-indigo-500">Add Keyword</button>
+      </div>
+      <div class="bg-[#2b2d31] p-4 rounded-xl border border-[#3f4147]">
+        <h2 class="text-xl font-semibold mb-3">Existing Keywords</h2>
+        <div class="overflow-auto">
+          <table class="w-full text-sm">
+            <thead><tr class="text-left border-b border-[#3f4147]">
+              <th class="py-2">Trigger</th><th class="py-2">Reply</th><th class="py-2">Actions</th>
+            </tr></thead>
+            <tbody id="kwBody"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- Truth or Dare Panel -->
+    <div id="panel-tad" class="space-y-4 hidden">
+      <div class="bg-[#2b2d31] p-4 rounded-xl border border-[#3f4147] space-y-3">
+        <h2 class="text-xl font-semibold">Add Truth or Dare</h2>
+        <div class="grid md:grid-cols-3 gap-3">
+          <select id="tadType" class="p-3 rounded bg-[#1e1f22] border border-[#3f4147]">
+            <option value="truth">Truth</option>
+            <option value="dare">Dare</option>
+          </select>
+          <input id="tadText" class="p-3 rounded bg-[#1e1f22] border border-[#3f4147] md:col-span-2" placeholder="Question or task text" />
+        </div>
+        <button onclick="createTAD()" class="px-4 py-2 rounded bg-indigo-600 hover:bg-indigo-500">Add Entry</button>
+      </div>
+      <div class="bg-[#2b2d31] p-4 rounded-xl border border-[#3f4147]">
+        <h2 class="text-xl font-semibold mb-3">Existing Entries</h2>
+        <div class="overflow-auto">
+          <table class="w-full text-sm">
+            <thead><tr class="text-left border-b border-[#3f4147]">
+              <th class="py-2">Type</th><th class="py-2">Text</th><th class="py-2">Actions</th>
+            </tr></thead>
+            <tbody id="tadBody"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- Quiz Panel -->
+    <div id="panel-quiz" class="space-y-4 hidden">
+      <div class="bg-[#2b2d31] p-4 rounded-xl border border-[#3f4147] space-y-3">
+        <h2 class="text-xl font-semibold">Add Quiz Question</h2>
+        <input id="quizQ" class="w-full p-3 rounded bg-[#1e1f22] border border-[#3f4147]" placeholder="Question" />
+        <div class="grid md:grid-cols-2 gap-3">
+          <input id="quizO1" class="p-3 rounded bg-[#1e1f22] border border-[#3f4147]" placeholder="Option A" />
+          <input id="quizO2" class="p-3 rounded bg-[#1e1f22] border border-[#3f4147]" placeholder="Option B" />
+          <input id="quizO3" class="p-3 rounded bg-[#1e1f22] border border-[#3f4147]" placeholder="Option C" />
+          <input id="quizO4" class="p-3 rounded bg-[#1e1f22] border border-[#3f4147]" placeholder="Option D" />
+        </div>
+        <input id="quizCorrect" class="w-full p-3 rounded bg-[#1e1f22] border border-[#3f4147]" placeholder="Correct answer (must match one of the options exactly)" />
+        <button onclick="createQuiz()" class="px-4 py-2 rounded bg-indigo-600 hover:bg-indigo-500">Add Question</button>
+      </div>
+      <div class="bg-[#2b2d31] p-4 rounded-xl border border-[#3f4147]">
+        <h2 class="text-xl font-semibold mb-3">Existing Questions</h2>
+        <div class="overflow-auto">
+          <table class="w-full text-sm">
+            <thead><tr class="text-left border-b border-[#3f4147]">
+              <th class="py-2">Question</th><th class="py-2">Options</th><th class="py-2">Answer</th><th class="py-2">Actions</th>
+            </tr></thead>
+            <tbody id="quizBody"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+
+<script>
+// ── Tab switching ──────────────────────────────────────────────────────────
+function showTab(name) {
+  ['keywords','tad','quiz'].forEach(t => {
+    document.getElementById('panel-' + t).classList.toggle('hidden', t !== name);
+    const btn = document.getElementById('tab-' + t);
+    btn.className = t === name
+      ? 'tab-btn px-4 py-2 rounded-t bg-indigo-600 text-white'
+      : 'tab-btn px-4 py-2 rounded-t bg-[#2b2d31] hover:bg-[#3f4147]';
+  });
+  if (name === 'keywords') refreshKeywords();
+  if (name === 'tad') refreshTAD();
+  if (name === 'quiz') refreshQuiz();
+}
+
+// ── Keywords ──────────────────────────────────────────────────────────────
+let keywords = [];
+async function refreshKeywords() {
+  const res = await fetch('/api/utilities/keywords');
+  const data = await res.json();
+  keywords = data.keywords || [];
+  renderKeywords();
+}
+function renderKeywords() {
+  const body = document.getElementById('kwBody');
+  body.innerHTML = '';
+  keywords.forEach(k => {
+    const tr = document.createElement('tr');
+    tr.className = 'border-b border-[#3f4147]';
+    tr.innerHTML = `<td class="py-2">${esc(k.trigger)}</td><td class="py-2">${esc(k.reply)}</td>
+      <td class="py-2">
+        <button class="px-2 py-1 bg-yellow-600 rounded mr-2" onclick="editKeyword('${k.id}')">Edit</button>
+        <button class="px-2 py-1 bg-red-600 rounded" onclick="deleteKeyword('${k.id}')">Delete</button>
+      </td>`;
+    body.appendChild(tr);
+  });
+}
+async function createKeyword() {
+  const trigger = document.getElementById('kwTrigger').value.trim();
+  const reply = document.getElementById('kwReply').value.trim();
+  if (!trigger || !reply) return alert('Both trigger and reply are required.');
+  const res = await fetch('/api/utilities/keywords', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({trigger, reply})});
+  const data = await res.json();
+  if (!res.ok) return alert(data.error || 'Failed');
+  document.getElementById('kwTrigger').value = '';
+  document.getElementById('kwReply').value = '';
+  await refreshKeywords();
+}
+async function editKeyword(id) {
+  const k = keywords.find(x => x.id === id);
+  if (!k) return;
+  const trigger = prompt('New trigger', k.trigger);
+  if (!trigger) return;
+  const reply = prompt('New reply', k.reply);
+  if (!reply) return;
+  await fetch('/api/utilities/keywords/' + id, {method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify({trigger, reply})});
+  await refreshKeywords();
+}
+async function deleteKeyword(id) {
+  if (!confirm('Delete this keyword?')) return;
+  await fetch('/api/utilities/keywords/' + id, {method:'DELETE'});
+  await refreshKeywords();
+}
+
+// ── Truth or Dare ──────────────────────────────────────────────────────────
+let tadItems = [];
+async function refreshTAD() {
+  const res = await fetch('/api/utilities/tad');
+  const data = await res.json();
+  tadItems = data.tad || [];
+  renderTAD();
+}
+function renderTAD() {
+  const body = document.getElementById('tadBody');
+  body.innerHTML = '';
+  tadItems.forEach(t => {
+    const tr = document.createElement('tr');
+    tr.className = 'border-b border-[#3f4147]';
+    tr.innerHTML = `<td class="py-2 capitalize">${esc(t.type)}</td><td class="py-2">${esc(t.text)}</td>
+      <td class="py-2"><button class="px-2 py-1 bg-red-600 rounded" onclick="deleteTAD('${t.id}')">Delete</button></td>`;
+    body.appendChild(tr);
+  });
+}
+async function createTAD() {
+  const type = document.getElementById('tadType').value;
+  const text = document.getElementById('tadText').value.trim();
+  if (!text) return alert('Text is required.');
+  const res = await fetch('/api/utilities/tad', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({type, text})});
+  const data = await res.json();
+  if (!res.ok) return alert(data.error || 'Failed');
+  document.getElementById('tadText').value = '';
+  await refreshTAD();
+}
+async function deleteTAD(id) {
+  if (!confirm('Delete this entry?')) return;
+  await fetch('/api/utilities/tad/' + id, {method:'DELETE'});
+  await refreshTAD();
+}
+
+// ── Quiz ──────────────────────────────────────────────────────────────────
+let quizItems = [];
+async function refreshQuiz() {
+  const res = await fetch('/api/utilities/quiz');
+  const data = await res.json();
+  quizItems = data.quiz || [];
+  renderQuiz();
+}
+function renderQuiz() {
+  const body = document.getElementById('quizBody');
+  body.innerHTML = '';
+  quizItems.forEach(q => {
+    const tr = document.createElement('tr');
+    tr.className = 'border-b border-[#3f4147]';
+    tr.innerHTML = `<td class="py-2">${esc(q.question)}</td>
+      <td class="py-2 text-xs">${(q.options||[]).map(o => esc(o)).join('<br>')}</td>
+      <td class="py-2 text-green-400">${esc(q.correct_answer)}</td>
+      <td class="py-2"><button class="px-2 py-1 bg-red-600 rounded" onclick="deleteQuiz('${q.id}')">Delete</button></td>`;
+    body.appendChild(tr);
+  });
+}
+async function createQuiz() {
+  const question = document.getElementById('quizQ').value.trim();
+  const options = [
+    document.getElementById('quizO1').value.trim(),
+    document.getElementById('quizO2').value.trim(),
+    document.getElementById('quizO3').value.trim(),
+    document.getElementById('quizO4').value.trim(),
+  ];
+  const correct_answer = document.getElementById('quizCorrect').value.trim();
+  if (!question || options.some(o => !o) || !correct_answer) return alert('All fields are required.');
+  if (!options.includes(correct_answer)) return alert('Correct answer must exactly match one of the 4 options.');
+  const res = await fetch('/api/utilities/quiz', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({question, options, correct_answer})});
+  const data = await res.json();
+  if (!res.ok) return alert(data.error || 'Failed');
+  ['quizQ','quizO1','quizO2','quizO3','quizO4','quizCorrect'].forEach(id => document.getElementById(id).value = '');
+  await refreshQuiz();
+}
+async function deleteQuiz(id) {
+  if (!confirm('Delete this question?')) return;
+  await fetch('/api/utilities/quiz/' + id, {method:'DELETE'});
+  await refreshQuiz();
+}
+
+function esc(s) {
+  return String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+// Init
+refreshKeywords();
 </script>
 </body>
 </html>
