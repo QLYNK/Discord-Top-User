@@ -230,7 +230,10 @@ class MusicCommands(commands.Cog):
         track = state.current or {}
         title = track.get("title", "Nothing playing")
         artwork = track.get("artwork_url") or DEFAULT_ARTWORK
-        elapsed = int(time.time() - state.start_time) if state.start_time else state.resume_offset
+        if state.paused:
+            elapsed = state.resume_offset
+        else:
+            elapsed = int(time.time() - state.start_time) if state.start_time else state.resume_offset
 
         embed = discord.Embed(title="🎵 Now Playing", description=f"**{title}**", color=0x1DB954)
         embed.set_thumbnail(url=artwork)
@@ -263,7 +266,13 @@ class MusicCommands(commands.Cog):
             await interaction.response.send_message("❌ Join a voice channel first.", ephemeral=True)
             return
 
-        track_doc = await music_col.find_one({"_id": ObjectId(search_query)})
+        try:
+            track_id = ObjectId(search_query)
+        except Exception:
+            await interaction.response.send_message("❌ Invalid track selection.", ephemeral=True)
+            return
+
+        track_doc = await music_col.find_one({"_id": track_id})
         if not track_doc:
             await interaction.response.send_message("❌ Track not found.", ephemeral=True)
             return
@@ -421,8 +430,12 @@ class MusicCommands(commands.Cog):
     async def _playback_loop(self, guild_id: int) -> None:
         state = self.get_state(guild_id)
         try:
-            while state.voice_client and state.voice_client.is_connected() and state.queue:
-                track = state.next_track or secrets.choice(state.queue)
+            while state.voice_client and state.voice_client.is_connected() and (state.queue or state.next_track):
+                track = state.next_track
+                if not track:
+                    if not state.queue:
+                        break
+                    track = secrets.choice(state.queue)
                 state.next_track = None
                 state.current = track
                 state.paused = False

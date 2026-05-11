@@ -114,15 +114,23 @@ async def upload_to_cdn(file_path: Path, title: str, space_password: str) -> str
 
 def cleanup_path(path: Path) -> None:
     try:
-        if path.exists() and path.is_file():
-            path.unlink()
+        tmp_root = ensure_tmp_dir().resolve()
+        resolved = path.resolve()
+        if not str(resolved).startswith(str(tmp_root)):
+            return
+        if resolved.exists() and resolved.is_file():
+            resolved.unlink()
     except Exception:
         pass
 
 
 def cleanup_tree(path: Path) -> None:
     try:
-        if path.exists() and path.is_dir():
-            shutil.rmtree(path)
+        tmp_root = ensure_tmp_dir().resolve()
+        resolved = path.resolve()
+        if not str(resolved).startswith(str(tmp_root)):
+            return
+        if resolved.exists() and resolved.is_dir():
+            shutil.rmtree(resolved)
     except Exception:
         pass

@@ -1,6 +1,7 @@
 import asyncio
 import json
 import os
+import re
 import secrets
 import time
 from datetime import datetime
@@ -34,6 +35,10 @@ RENDER_PUBLIC_URL = "https://deepdey.onrender.com"
 
 mongo_client = MongoClient(MONGO_URI) if MONGO_URI else None
 music_col = mongo_client["LeaderboardBotDB"]["MusicTracks"] if mongo_client else None
+UPLOAD_ID_PATTERN = r"^[a-fA-F0-9-]{8,64}$"
+MAX_CHUNKS = 4096
+CHUNK_SIZE_BYTES = 10 * 1024 * 1024
+_UPLOAD_SESSION_KEYS: dict[str, str] = {}
 
 
 def _run_async(coro):
@@ -97,10 +102,16 @@ def music_dashboard():
 def list_tracks():
     if not music_col:
         return jsonify({"error": "MONGO_URI is not configured"}), 500
+    try:
+        limit = max(1, min(200, int(request.args.get("limit", 100))))
+        skip = max(0, int(request.args.get("skip", 0)))
+    except ValueError:
+        return jsonify({"error": "Invalid pagination parameters"}), 400
+
     docs = list(
         music_col.find(
             {}, {"title": 1, "artwork_url": 1, "file_url": 1}
-        ).sort("_id", -1)
+        ).sort("_id", -1).skip(skip).limit(limit)
     )
     tracks = [
         {
@@ -182,7 +193,8 @@ def process_music():
         inserted = music_col.insert_one(doc)
         return jsonify({"ok": True, "track": {"id": str(inserted.inserted_id), **doc}})
     except Exception as exc:
-        return jsonify({"error": str(exc)}), 500
+        print(f"[MusicDashboard] URL processing failed: {type(exc).__name__}")
+        return jsonify({"error": "Failed to process URL input"}), 500
     finally:
         if source_file:
             cleanup_path(source_file)
@@ -198,14 +210,19 @@ def _handle_chunk_flow(tmp_dir: Path):
 
     if not upload_id or chunk_index is None or total_chunks is None or not chunk:
         return jsonify({"error": "Invalid chunk payload"}), 400
+    if not re.match(UPLOAD_ID_PATTERN, upload_id):
+        return jsonify({"error": "Invalid upload_id"}), 400
 
     try:
         idx = int(chunk_index)
         total = int(total_chunks)
     except ValueError:
         return jsonify({"error": "Invalid chunk indexes"}), 400
+    if idx < 0 or total <= 0 or idx >= total or total > MAX_CHUNKS:
+        return jsonify({"error": "Invalid chunk ranges"}), 400
 
-    upload_dir = tmp_dir / "chunks" / upload_id
+    safe_key = _UPLOAD_SESSION_KEYS.setdefault(upload_id, secrets.token_hex(16))
+    upload_dir = tmp_dir / "chunks" / safe_key
     upload_dir.mkdir(parents=True, exist_ok=True)
     part_path = upload_dir / f"{idx}.part"
     chunk.save(part_path)
@@ -214,7 +231,7 @@ def _handle_chunk_flow(tmp_dir: Path):
     if len(present) < total:
         return jsonify({"ok": True, "status": "chunk_received", "received": len(present), "total": total})
 
-    source_file = tmp_dir / f"assembled_{upload_id}.bin"
+    source_file = tmp_dir / f"assembled_{safe_key}.bin"
     final_mp3 = None
     try:
         with open(source_file, "wb") as target:
@@ -237,10 +254,12 @@ def _handle_chunk_flow(tmp_dir: Path):
         inserted = music_col.insert_one(doc)
         return jsonify({"ok": True, "status": "completed", "track": {"id": str(inserted.inserted_id), **doc}})
     except Exception as exc:
-        return jsonify({"error": str(exc)}), 500
+        print(f"[MusicDashboard] Chunk processing failed: {type(exc).__name__}")
+        return jsonify({"error": "Failed to process uploaded file"}), 500
     finally:
         cleanup_tree(upload_dir)
         cleanup_path(source_file)
+        _UPLOAD_SESSION_KEYS.pop(upload_id, None)
         if final_mp3:
             cleanup_path(final_mp3)
 
