@@ -48,6 +48,22 @@ def _run_async(coro):
     return asyncio.run(coro)
 
 
+def _coerce_id_query(raw_id: str) -> dict:
+    try:
+        return {"$or": [{"_id": ObjectId(raw_id)}, {"_id": raw_id}]}
+    except Exception:
+        return {"_id": raw_id}
+
+
+def _track_doc_to_payload(doc: dict) -> dict:
+    return {
+        "id": str(doc.get("_id", "")),
+        "title": doc.get("title") or doc.get("name") or "Untitled Track",
+        "artwork_url": doc.get("artwork_url") or DEFAULT_ARTWORK,
+        "file_url": doc.get("file_url") or doc.get("url") or "",
+    }
+
+
 def _require_music_auth(func):
     @wraps(func)
     def wrapper(*args, **kwargs):
@@ -127,18 +143,10 @@ def list_tracks():
 
     docs = list(
         music_col.find(
-            {}, {"title": 1, "artwork_url": 1, "file_url": 1}
+            {}, {"title": 1, "name": 1, "artwork_url": 1, "file_url": 1, "url": 1}
         ).sort("_id", -1).skip(skip).limit(limit)
     )
-    tracks = [
-        {
-            "id": str(doc["_id"]),
-            "title": doc.get("title", "Untitled Track"),
-            "artwork_url": doc.get("artwork_url", DEFAULT_ARTWORK),
-            "file_url": doc.get("file_url", ""),
-        }
-        for doc in docs
-    ]
+    tracks = [_track_doc_to_payload(doc) for doc in docs]
     return jsonify({"tracks": tracks})
 
 
@@ -155,10 +163,12 @@ def edit_track(track_id: str):
     if not title:
         return jsonify({"error": "title is required"}), 400
 
-    music_col.update_one(
-        {"_id": ObjectId(track_id)},
-        {"$set": {"title": title, "artwork_url": artwork_url}},
+    result = music_col.update_one(
+        _coerce_id_query(track_id),
+        {"$set": {"title": title, "name": title, "artwork_url": artwork_url}},
     )
+    if result.matched_count == 0:
+        return jsonify({"error": "Track not found"}), 404
     return jsonify({"ok": True})
 
 
@@ -168,7 +178,9 @@ def delete_track(track_id: str):
     if not music_col:
         return jsonify({"error": "MONGO_URI is not configured"}), 500
 
-    music_col.delete_one({"_id": ObjectId(track_id)})
+    result = music_col.delete_one(_coerce_id_query(track_id))
+    if result.deleted_count == 0:
+        return jsonify({"error": "Track not found"}), 404
     return jsonify({"ok": True})
 
 

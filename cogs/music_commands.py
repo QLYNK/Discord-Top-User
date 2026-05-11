@@ -29,6 +29,13 @@ INSTA_LINK = "https://instagram.com/deepdey.official"
 DEFAULT_ARTWORK = "https://deydeep-static-files.hf.space/f/ncs"
 
 
+def _coerce_track_query(raw_id: str) -> dict:
+    try:
+        return {"$or": [{"_id": ObjectId(raw_id)}, {"_id": raw_id}]}
+    except Exception:
+        return {"_id": raw_id}
+
+
 def _base_view() -> discord.ui.View:
     v = discord.ui.View()
     v.add_item(discord.ui.Button(label="an app by deep", url=APP_LINK, style=discord.ButtonStyle.link))
@@ -266,13 +273,7 @@ class MusicCommands(commands.Cog):
             await interaction.response.send_message("❌ Join a voice channel first.", ephemeral=True)
             return
 
-        try:
-            track_id = ObjectId(search_query)
-        except Exception:
-            await interaction.response.send_message("❌ Invalid track selection.", ephemeral=True)
-            return
-
-        track_doc = await music_col.find_one({"_id": track_id})
+        track_doc = await music_col.find_one(_coerce_track_query(search_query))
         if not track_doc:
             await interaction.response.send_message("❌ Track not found.", ephemeral=True)
             return
@@ -437,13 +438,13 @@ class MusicCommands(commands.Cog):
                         break
                     track = secrets.choice(state.queue)
                 state.next_track = None
-                state.current = track
+                state.current = None
                 state.paused = False
-                state.start_time = time.time()
                 await self.persist_state(guild_id)
 
                 mp3_path = await smart_download(track["file_url"])
                 if not mp3_path:
+                    print(f"[Music] Failed to download/prepare track: {track.get('title', 'unknown')}")
                     await asyncio.sleep(1)
                     continue
 
@@ -452,10 +453,18 @@ class MusicCommands(commands.Cog):
                     before_options = f"-ss {state.resume_offset}"
 
                 try:
-                    source = discord.FFmpegPCMAudio(str(mp3_path), before_options=before_options)
+                    source = discord.FFmpegPCMAudio(
+                        str(mp3_path),
+                        before_options=before_options,
+                        options="-vn -loglevel warning",
+                    )
                     state.voice_client.play(source)
+                    state.current = track
+                    state.start_time = time.time()
                     state.resume_offset = 0
-                except Exception:
+                    await self.persist_state(guild_id)
+                except Exception as exc:
+                    print(f"[Music] Playback error for {track.get('title', 'unknown')}: {type(exc).__name__}")
                     await asyncio.sleep(1)
                     continue
 
