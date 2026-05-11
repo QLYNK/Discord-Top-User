@@ -10,7 +10,7 @@ app = Flask('')
 CORS(app)
 
 # TERA RENDER APP URL YAHAN DAALNA
-RENDER_PUBLIC_URL = "https://tera-bot.onrender.com" 
+RENDER_PUBLIC_URL = "https://deepdey.onrender.com" 
 
 @app.route('/')
 def home():
