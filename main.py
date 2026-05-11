@@ -32,8 +32,8 @@ message_buffer = {}
 async def on_ready():
     print(f"✅ Logged in as {bot.user} | Ready to track!")
     
-    # Load Cogs (Setup Commands + Music Engine)
-    for extension in ("cogs.setup_commands", "cogs.music_commands"):
+    # Load Cogs (Setup Commands + Music Engine + Game Engine)
+    for extension in ("cogs.setup_commands", "cogs.music_commands", "cogs.game_commands"):
         try:
             await bot.load_extension(extension)
             print(f"✅ Loaded extension: {extension}")
