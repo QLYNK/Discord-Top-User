@@ -1,9 +1,10 @@
 import discord
-from discord.ext import commands
+from discord.ext import commands, tasks
 from discord import app_commands
 import sys
 import database as db
 import utils
+from datetime import datetime, timezone
 
 # Interactive Button UI for Role Setup
 class RoleSetupView(discord.ui.View):
@@ -31,6 +32,17 @@ class RoleSetupView(discord.ui.View):
 class SetupCommands(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
+        self.daily_activity_logs.start()
+
+    def cog_unload(self):
+        self.daily_activity_logs.cancel()
+
+    @staticmethod
+    def _branding_view() -> discord.ui.View:
+        view = discord.ui.View()
+        view.add_item(discord.ui.Button(label="an app by deep", url="https://deepdey.vercel.app/", style=discord.ButtonStyle.link))
+        view.add_item(discord.ui.Button(label="Instagram", url="https://instagram.com/deepdey.official", style=discord.ButtonStyle.link))
+        return view
 
     # Create the /setup slash command group
     setup_group = app_commands.Group(name="setup", description="Leaderboard bot setup and configurations", default_permissions=discord.Permissions(administrator=True))
@@ -95,6 +107,41 @@ class SetupCommands(commands.Cog):
         embed.add_field(name="Uptime", value=uptime, inline=True)
         await interaction.response.send_message(embed=embed)
 
+    @setup_group.command(name="check", description="Show current leaderboard cycle overview and configuration")
+    async def setup_check(self, interaction: discord.Interaction):
+        settings = await db.get_guild_settings(interaction.guild_id)
+        top_users = await db.get_top_users(interaction.guild_id, 3)
+        all_users = await db.get_all_users(interaction.guild_id)
+        total_messages = sum(int(user.get("message_count", 0)) for user in all_users)
+
+        top_lines = []
+        medals = ["🥇", "🥈", "🥉"]
+        for i, user_data in enumerate(top_users):
+            member = interaction.guild.get_member(user_data.get("user_id"))
+            display = member.mention if member else f"`{user_data.get('user_id')}`"
+            top_lines.append(f"{medals[i]} {display} — {user_data.get('message_count', 0)} messages")
+        if not top_lines:
+            top_lines = ["No tracked activity yet in this cycle."]
+
+        announcement_channel = interaction.guild.get_channel(settings.get("announcement_channel_id"))
+        logs_channel = interaction.guild.get_channel(settings.get("logs_channel_id"))
+        reward_role = interaction.guild.get_role(settings.get("reward_role_id"))
+
+        embed = discord.Embed(
+            title="🧪 Setup Check",
+            description="Current cycle leaderboard status and configuration snapshot.",
+            color=0x5865F2,
+            timestamp=datetime.now(timezone.utc),
+        )
+        embed.add_field(name="Top 3 Most Active Users", value="\n".join(top_lines), inline=False)
+        embed.add_field(name="Total Messages (Current Cycle)", value=str(total_messages), inline=False)
+        embed.add_field(name="Announcement Channel", value=announcement_channel.mention if announcement_channel else "`Not set`", inline=True)
+        embed.add_field(name="Logs Channel", value=logs_channel.mention if logs_channel else "`Not set`", inline=True)
+        embed.add_field(name="Reward Role", value=reward_role.mention if reward_role else "`Not set`", inline=True)
+        embed.add_field(name="Interval Days", value=str(settings.get("interval_days", 7)), inline=True)
+        embed.set_footer(text="an app by deep")
+        await interaction.response.send_message(embed=embed, view=self._branding_view())
+
     @setup_group.command(name="reset", description="Soft Reset: Send logs and delete current cycle data")
     async def setup_reset(self, interaction: discord.Interaction):
         await interaction.response.defer()
@@ -128,13 +175,49 @@ class SetupCommands(commands.Cog):
         embed.add_field(name="`/setup ping` & `/setup restart`", value="Uptime check karne aur bot restart karne ke liye.", inline=False)
         
         embed.set_footer(text="an app by deep", icon_url=interaction.user.avatar.url if interaction.user.avatar else None)
-        
-        # Action Row / Button
-        view = discord.ui.View()
-        view.add_item(discord.ui.Button(label="Follow owner", url="https://instagram.com/deepdey.official", style=discord.ButtonStyle.link))
-        view.add_item(discord.ui.Button(label="Developer Site", url="https://deepdey.vercel.app/", style=discord.ButtonStyle.link))
-        
-        await interaction.response.send_message(embed=embed, view=view)
+        await interaction.response.send_message(embed=embed, view=self._branding_view())
+
+    @tasks.loop(hours=24)
+    async def daily_activity_logs(self):
+        async for settings in db.settings_col.find({}):
+            guild_id = settings.get("guild_id")
+            logs_channel_id = settings.get("logs_channel_id")
+            if not guild_id or not logs_channel_id:
+                continue
+
+            guild = self.bot.get_guild(guild_id)
+            if not guild:
+                continue
+            logs_channel = guild.get_channel(logs_channel_id)
+            if not logs_channel:
+                continue
+
+            all_users = await db.get_all_users(guild_id)
+            total_messages = sum(int(user.get("message_count", 0)) for user in all_users)
+            top_users = all_users[:3]
+            top_lines = []
+            medals = ["🥇", "🥈", "🥉"]
+            for i, user_data in enumerate(top_users):
+                member = guild.get_member(user_data.get("user_id"))
+                display = member.mention if member else f"`{user_data.get('user_id')}`"
+                top_lines.append(f"{medals[i]} {display} — {user_data.get('message_count', 0)}")
+            if not top_lines:
+                top_lines = ["No activity tracked in the last 24h window."]
+
+            embed = discord.Embed(
+                title="📊 Daily Activity Summary",
+                description=f"Server: **{guild.name}**",
+                color=0x5865F2,
+                timestamp=datetime.now(timezone.utc),
+            )
+            embed.add_field(name="Total Messages Tracked", value=str(total_messages), inline=False)
+            embed.add_field(name="Quick Active User Stats", value="\n".join(top_lines), inline=False)
+            embed.set_footer(text="an app by deep")
+            await logs_channel.send(embed=embed, view=self._branding_view())
+
+    @daily_activity_logs.before_loop
+    async def before_daily_activity_logs(self):
+        await self.bot.wait_until_ready()
 
 async def setup(bot):
     await bot.add_cog(SetupCommands(bot))
