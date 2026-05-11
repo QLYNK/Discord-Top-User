@@ -1,6 +1,9 @@
-discord.py
+discord.py[voice]
 motor
 python-dotenv
 flask
 flask-cors
 requests
+yt-dlp
+PyNaCl
+aiohttp

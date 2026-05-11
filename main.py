@@ -32,13 +32,18 @@ message_buffer = {}
 async def on_ready():
     print(f"✅ Logged in as {bot.user} | Ready to track!")
     
-    # Load Cogs (Setup Commands)
+    # Load Cogs (Setup Commands + Music Engine)
+    for extension in ("cogs.setup_commands", "cogs.music_commands"):
+        try:
+            await bot.load_extension(extension)
+            print(f"✅ Loaded extension: {extension}")
+        except Exception as e:
+            print(f"❌ Error loading {extension}: {e}")
     try:
-        await bot.load_extension("cogs.setup_commands")
         await bot.tree.sync()
         print("✅ Slash commands synced!")
     except Exception as e:
-        print(f"❌ Error loading cogs: {e}")
+        print(f"❌ Error syncing slash commands: {e}")
 
     # Saare background tasks ek hi baar start karo
     if not leaderboard_loop.is_running():
