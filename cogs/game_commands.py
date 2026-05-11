@@ -19,6 +19,8 @@ quiz_col = _game_db["QuizQuestions"]
 
 APP_LINK = "https://deepdey.vercel.app/"
 INSTA_LINK = "https://instagram.com/deepdey.official"
+KEYWORD_CACHE_TTL = 300  # seconds between keyword cache refreshes
+RPS_CHOICE_EMOJIS = ("✊", "✋", "✌️")
 
 # ── Branding view ────────────────────────────────────────────────────────────
 
@@ -255,17 +257,6 @@ class QuizView(discord.ui.View):
 class GameCommands(commands.Cog):
     """Cog housing all /game subcommands and the auto-responder."""
 
-    KEYWORD_CACHE_TTL = 300  # seconds
-
-    def __init__(self, bot: commands.Bot):
-        self.bot = bot
-        self._keyword_cache: dict[str, str] = {}
-        self._cache_ts: float = 0.0
-        self._refresh_keyword_cache.start()
-
-    def cog_unload(self):
-        self._refresh_keyword_cache.cancel()
-
     # ── Keyword cache ────────────────────────────────────────────────────────
 
     @tasks.loop(seconds=KEYWORD_CACHE_TTL)
@@ -364,7 +355,7 @@ class GameCommands(commands.Cog):
 
         # If opponent is the bot, auto-pick instantly
         if opponent.id == self.bot.user.id:  # type: ignore[union-attr]
-            bot_pick = secrets.choice(list(RPSView.CHOICES.keys()))
+            bot_pick = secrets.choice(RPS_CHOICE_EMOJIS)
             game_state[opponent.id] = bot_pick
 
             if game_state[challenger.id] is not None:
