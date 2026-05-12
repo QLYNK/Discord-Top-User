@@ -8,6 +8,7 @@ from datetime import datetime
 from functools import wraps
 from pathlib import Path
 from threading import Thread
+from typing import Any
 
 import requests
 from bson import ObjectId
@@ -38,16 +39,94 @@ music_col = sync_mongo_client["LeaderboardBotDB"]["MusicTracks"] if sync_mongo_c
 keywords_col = sync_mongo_client["LeaderboardBotDB"]["GameKeywords"] if sync_mongo_client else None
 tad_col = sync_mongo_client["LeaderboardBotDB"]["TruthOrDare"] if sync_mongo_client else None
 quiz_col = sync_mongo_client["LeaderboardBotDB"]["QuizQuestions"] if sync_mongo_client else None
+activity_col = sync_mongo_client["LeaderboardBotDB"]["ActivityData"] if sync_mongo_client else None
 UPLOAD_ID_PATTERN = r"^[a-fA-F0-9-]{8,64}$"
 MAX_CHUNKS = 4096
 CHUNK_SIZE_BYTES = 10 * 1024 * 1024
 _UPLOAD_SESSION_KEYS: dict[str, str] = {}
 _TELEMETRY_HANDLER = None
+_BOT_REF = None
+_GUILD_CACHE: dict[str, Any] = {
+    "updated_at": 0.0,
+    "guilds": [],
+    "total_members": 0,
+}
 
 
 def register_telemetry_handler(handler):
     global _TELEMETRY_HANDLER
     _TELEMETRY_HANDLER = handler
+
+
+def register_bot(bot):
+    global _BOT_REF
+    _BOT_REF = bot
+
+
+def _refresh_guild_cache() -> None:
+    if not _BOT_REF:
+        _GUILD_CACHE["updated_at"] = time.time()
+        _GUILD_CACHE["guilds"] = []
+        _GUILD_CACHE["total_members"] = 0
+        return
+
+    guilds_payload = []
+    total_members = 0
+    try:
+        for guild in list(_BOT_REF.guilds):
+            member_count = int(guild.member_count or 0)
+            total_members += member_count
+            guilds_payload.append(
+                {
+                    "id": int(guild.id),
+                    "name": guild.name,
+                    "description": str(getattr(guild, "description", "") or ""),
+                    "member_count": member_count,
+                    "icon_url": str(guild.icon.url) if guild.icon else "",
+                    "bot_integration_status": "Connected",
+                }
+            )
+        guilds_payload.sort(key=lambda x: x["name"].lower())
+    except Exception:
+        guilds_payload = []
+        total_members = 0
+
+    _GUILD_CACHE["updated_at"] = time.time()
+    _GUILD_CACHE["guilds"] = guilds_payload
+    _GUILD_CACHE["total_members"] = total_members
+
+
+def _get_discovery_snapshot() -> dict[str, Any]:
+    now = time.time()
+    if now - float(_GUILD_CACHE.get("updated_at", 0.0)) > 15:
+        _refresh_guild_cache()
+
+    guilds = list(_GUILD_CACHE.get("guilds", []))
+    total_guilds = len(guilds)
+    total_users = int(_GUILD_CACHE.get("total_members", 0))
+
+    global_message_count = 0
+    if activity_col:
+        try:
+            result = list(activity_col.aggregate([{"$group": {"_id": None, "total": {"$sum": "$message_count"}}}]))
+            global_message_count = int(result[0]["total"]) if result else 0
+        except Exception:
+            global_message_count = 0
+
+    uptime_seconds = 0
+    if _BOT_REF and getattr(_BOT_REF, "start_time", None):
+        try:
+            uptime_seconds = max(0, int((datetime.utcnow() - _BOT_REF.start_time).total_seconds()))
+        except Exception:
+            uptime_seconds = 0
+
+    return {
+        "total_guilds": total_guilds,
+        "total_users": total_users,
+        "global_message_count": global_message_count,
+        "uptime_seconds": uptime_seconds,
+        "guilds": guilds,
+    }
 
 
 def _emit_dashboard_telemetry(activity_type: str, details: str, *, fields: list[tuple[str, str, bool]] | None = None):
@@ -140,18 +219,88 @@ def _api_json_guard(func):
 
 @app.route("/")
 def home():
-    return render_template_string(_HOME_HTML)
+    return render_template_string(_HOME_HTML, initial_guild_id=None)
+
+
+@app.route("/server/<int:guild_id>")
+def server_detail_page(guild_id: int):
+    return render_template_string(_HOME_HTML, initial_guild_id=guild_id)
 
 
 @app.route("/api/stats")
 @_api_json_guard
 def stats():
+    snapshot = _get_discovery_snapshot()
+    ping = "..."
     try:
         with open("stats.json", "r") as f:
-            data = json.load(f)
-            return jsonify(data)
+            ping = json.load(f).get("ping", "...")
     except Exception:
-        return jsonify({"servers": "Loading...", "ping": "..."})
+        pass
+    return jsonify(
+        {
+            "servers": snapshot["total_guilds"],
+            "ping": ping,
+            "users": snapshot["total_users"],
+            "global_message_count": snapshot["global_message_count"],
+            "uptime_seconds": snapshot["uptime_seconds"],
+        }
+    )
+
+
+@app.route("/api/public/guilds", methods=["GET"])
+@_api_json_guard
+def public_guilds():
+    snapshot = _get_discovery_snapshot()
+    query = (request.args.get("q") or "").strip().lower()
+    try:
+        page = max(1, int(request.args.get("page", 1)))
+    except ValueError:
+        return jsonify({"error": "Invalid page parameter"}), 400
+    per_page = 50
+
+    guilds = snapshot["guilds"]
+    if query:
+        terms = [term for term in re.split(r"\s+", query) if term]
+
+        def _match(entry: dict[str, Any]) -> bool:
+            haystack = f"{entry.get('name', '')}\n{entry.get('description', '')}".lower()
+            return all(term in haystack for term in terms)
+
+        guilds = [g for g in guilds if _match(g)]
+
+    start = (page - 1) * per_page
+    end = start + per_page
+    page_items = guilds[start:end]
+
+    return jsonify(
+        {
+            "items": page_items,
+            "pagination": {
+                "page": page,
+                "per_page": per_page,
+                "total_items": len(guilds),
+                "has_next": end < len(guilds),
+                "has_prev": page > 1,
+            },
+            "totals": {
+                "guilds": snapshot["total_guilds"],
+                "users": snapshot["total_users"],
+                "global_message_count": snapshot["global_message_count"],
+                "uptime_seconds": snapshot["uptime_seconds"],
+            },
+        }
+    )
+
+
+@app.route("/api/public/guilds/<int:guild_id>", methods=["GET"])
+@_api_json_guard
+def public_guild_detail(guild_id: int):
+    snapshot = _get_discovery_snapshot()
+    for guild in snapshot["guilds"]:
+        if int(guild.get("id", 0)) == guild_id:
+            return jsonify({"guild": guild})
+    return jsonify({"error": "Guild not found"}), 404
 
 
 @app.route("/music/login", methods=["GET", "POST"])
@@ -539,11 +688,22 @@ def crypto_self_ping():
             print(f"⚠️ Crypto-ping failed: {e}")
 
 
+def guild_cache_refresh_loop():
+    while True:
+        try:
+            _refresh_guild_cache()
+        except Exception:
+            pass
+        time.sleep(20)
+
+
 def keep_alive():
-    t = Thread(target=run)
+    t = Thread(target=run, daemon=True)
     t.start()
-    ping_thread = Thread(target=crypto_self_ping)
+    ping_thread = Thread(target=crypto_self_ping, daemon=True)
     ping_thread.start()
+    guild_cache_thread = Thread(target=guild_cache_refresh_loop, daemon=True)
+    guild_cache_thread.start()
 
 
 _LOGIN_HTML = """
@@ -751,31 +911,186 @@ refreshTracks();
 
 _HOME_HTML = """
 <!doctype html>
-<html>
+<html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Bot Dashboard</title>
+  <title>Discord Top User — Discovery Dashboard | Deep Dey</title>
+  <meta name="description" content="Discover real-time Discord communities where Discord Top User is active. Explore guild stats, leaderboard automation, music tools, games, and admin utilities.">
+  <meta name="keywords" content="Discord bot, leaderboard bot, discord music bot, discord games bot, Deep Dey, FUTURE IITIAN, server analytics">
+  <link rel="canonical" href="https://deepdey.onrender.com/">
+  <meta property="og:title" content="Discord Top User — Discovery Dashboard">
+  <meta property="og:description" content="Live discovery dashboard for Discord-Top-User with searchable server list, live stats, and integration details.">
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="https://deepdey.onrender.com/">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="Discord Top User — Discovery Dashboard">
+  <meta name="twitter:description" content="Live searchable Discord server discovery dashboard by Deep Dey - The FUTURE IITIAN.">
   <script src="https://cdn.tailwindcss.com"></script>
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "SoftwareApplication",
+    "name": "Discord Top User",
+    "applicationCategory": "DeveloperApplication",
+    "operatingSystem": "Cross-platform",
+    "url": "https://deepdey.onrender.com/",
+    "description": "A professional Discord bot platform with leaderboard tracking, music administration, games, and utilities.",
+    "creator": {
+      "@type": "Person",
+      "name": "Deep Dey - The FUTURE IITIAN"
+    }
+  }
+  </script>
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "Organization",
+    "name": "Deep Dey",
+    "url": "https://deepdey.vercel.app/",
+    "sameAs": [
+      "https://github.com/deepdeyiitgn/Discord-Top-User",
+      "https://deepdey.vercel.app/insta"
+    ]
+  }
+  </script>
 </head>
-<body class="bg-[#1e1f22] text-[#dbdee1] min-h-screen grid place-items-center">
-  <div class="max-w-xl w-full p-6 space-y-6 text-center">
-    <h1 class="text-4xl font-bold text-white">🤖 Bot Dashboard</h1>
-    <p class="text-[#949ba4]">Select a section to manage:</p>
-    <div class="grid grid-cols-2 gap-6">
-      <a href="/music" class="bg-[#2b2d31] hover:bg-[#383a40] border border-[#5865F2] rounded-2xl p-8 flex flex-col items-center gap-3 transition">
-        <span class="text-5xl">🎵</span>
-        <span class="text-xl font-semibold">Music</span>
-        <span class="text-sm text-[#949ba4]">Manage tracks & uploads</span>
-      </a>
-      <a href="/utilities" class="bg-[#2b2d31] hover:bg-[#383a40] border border-[#5865F2] rounded-2xl p-8 flex flex-col items-center gap-3 transition">
-        <span class="text-5xl">🎮</span>
-        <span class="text-xl font-semibold">Utilities</span>
-        <span class="text-sm text-[#949ba4]">Keywords, TAD & Quiz</span>
-      </a>
+<body class="bg-[#0f1115] text-slate-100 min-h-screen">
+  <header class="border-b border-slate-800 bg-[#11161f]/95 backdrop-blur sticky top-0 z-20">
+    <nav class="max-w-7xl mx-auto px-4 py-4 flex flex-wrap gap-3 items-center justify-between">
+      <a href="/" class="font-semibold text-lg">Discord Top User</a>
+      <div class="flex flex-wrap gap-2 text-sm">
+        <a href="/" class="px-3 py-2 rounded bg-slate-800 hover:bg-slate-700">Home</a>
+        <a href="/music" class="px-3 py-2 rounded bg-slate-800 hover:bg-slate-700">Music Admin</a>
+        <a href="/utilities" class="px-3 py-2 rounded bg-slate-800 hover:bg-slate-700">Utilities Admin</a>
+        <a href="https://deepdey.vercel.app/contact" class="px-3 py-2 rounded bg-slate-800 hover:bg-slate-700">Contact</a>
+      </div>
+    </nav>
+  </header>
+  <main class="max-w-7xl mx-auto px-4 py-8 space-y-6">
+    <section class="rounded-2xl border border-indigo-600/40 bg-gradient-to-br from-indigo-700/20 to-slate-900 p-6">
+      <div class="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-5">
+        <div>
+          <h1 class="text-3xl md:text-4xl font-bold">Discovery Dashboard</h1>
+          <p class="text-slate-300 mt-2">Real-time public server index powered directly from Discord bot guild membership.</p>
+          <p class="text-indigo-300 text-sm mt-2">Architect: Deep Dey - The FUTURE IITIAN</p>
+        </div>
+        <a href="https://discord.com/oauth2/authorize?client_id=1503257840356163584&permissions=6835289926782017&integration_type=0&scope=bot"
+           class="inline-flex items-center justify-center px-5 py-3 rounded-lg bg-indigo-600 hover:bg-indigo-500 font-semibold">Add to Discord</a>
+      </div>
+    </section>
+    <section class="grid sm:grid-cols-2 xl:grid-cols-4 gap-4" id="statsCards">
+      <article class="rounded-xl border border-slate-800 bg-[#151b24] p-4"><p class="text-slate-400 text-sm">Total Guilds</p><p id="statGuilds" class="text-2xl font-bold mt-1">—</p></article>
+      <article class="rounded-xl border border-slate-800 bg-[#151b24] p-4"><p class="text-slate-400 text-sm">Total Users</p><p id="statUsers" class="text-2xl font-bold mt-1">—</p></article>
+      <article class="rounded-xl border border-slate-800 bg-[#151b24] p-4"><p class="text-slate-400 text-sm">Global Message Count</p><p id="statMessages" class="text-2xl font-bold mt-1">—</p></article>
+      <article class="rounded-xl border border-slate-800 bg-[#151b24] p-4"><p class="text-slate-400 text-sm">Uptime</p><p id="statUptime" class="text-2xl font-bold mt-1">—</p></article>
+    </section>
+    <section class="rounded-xl border border-slate-800 bg-[#151b24] p-4 md:p-5 space-y-4">
+      <div class="flex flex-col md:flex-row md:items-center gap-3 md:justify-between">
+        <h2 class="text-xl font-semibold">Server List</h2>
+        <input id="searchInput" type="search" placeholder="Search by name/description (character, word, or line)"
+               class="w-full md:w-[420px] px-4 py-2 rounded bg-[#0f1115] border border-slate-700 outline-none focus:border-indigo-500">
+      </div>
+      <div id="serverList" class="grid md:grid-cols-2 xl:grid-cols-3 gap-3"></div>
+      <div class="flex items-center justify-between pt-2">
+        <button id="prevBtn" class="px-4 py-2 rounded bg-slate-800 hover:bg-slate-700 disabled:opacity-50" disabled>Previous</button>
+        <p id="pageLabel" class="text-sm text-slate-400">Page 1</p>
+        <button id="nextBtn" class="px-4 py-2 rounded bg-slate-800 hover:bg-slate-700 disabled:opacity-50" disabled>Next</button>
+      </div>
+    </section>
+    <section id="serverDetail" class="rounded-xl border border-slate-800 bg-[#151b24] p-5 hidden"></section>
+  </main>
+  <footer class="border-t border-slate-800 py-6">
+    <div class="max-w-7xl mx-auto px-4 flex flex-col md:flex-row gap-3 justify-between items-center text-sm text-slate-400">
+      <p>© <span id="year"></span> Discord Top User • Built by Deep Dey - The FUTURE IITIAN</p>
+      <div class="flex gap-4">
+        <a class="hover:text-white" href="https://github.com/deepdeyiitgn/Discord-Top-User">GitHub</a>
+        <a class="hover:text-white" href="https://deepdey.vercel.app/insta">Instagram</a>
+      </div>
     </div>
-    <p class="text-xs text-[#949ba4]">an app by <a href="https://deepdey.vercel.app/" class="underline hover:text-white">deep</a></p>
-  </div>
+  </footer>
+  <script>
+    const INVITE_URL = "https://discord.com/oauth2/authorize?client_id=1503257840356163584&permissions=6835289926782017&integration_type=0&scope=bot";
+    const initialGuildId = {{ initial_guild_id | tojson }};
+    let currentPage = 1;
+    let currentQuery = "";
+
+    function fmtNumber(v){ const n = Number(v || 0); return Number.isFinite(n) ? n.toLocaleString() : "0"; }
+    function fmtUptime(seconds){ let s = Math.max(0, Number(seconds || 0)); const d = Math.floor(s / 86400); s%=86400; const h=Math.floor(s/3600); s%=3600; const m=Math.floor(s/60); s%=60; return `${d}d ${h}h ${m}m ${s}s`; }
+
+    function renderStats(totals) {
+      document.getElementById("statGuilds").textContent = fmtNumber(totals.guilds);
+      document.getElementById("statUsers").textContent = fmtNumber(totals.users);
+      document.getElementById("statMessages").textContent = fmtNumber(totals.global_message_count);
+      document.getElementById("statUptime").textContent = fmtUptime(totals.uptime_seconds);
+    }
+
+    function cardTemplate(server) {
+      const icon = server.icon_url || "https://cdn.discordapp.com/embed/avatars/0.png";
+      return `
+        <article class="rounded-lg border border-slate-800 bg-[#0f1115] p-4">
+          <div class="flex items-start gap-3">
+            <img src="${icon}" alt="${server.name}" class="w-12 h-12 rounded-lg object-cover">
+            <div class="min-w-0 flex-1">
+              <h3 class="font-semibold truncate">${server.name}</h3>
+              <p class="text-sm text-slate-400 mt-1">${fmtNumber(server.member_count)} members</p>
+              <p class="text-xs text-indigo-300 mt-1 truncate">Status: ${server.bot_integration_status}</p>
+            </div>
+          </div>
+          <div class="mt-4 flex gap-2">
+            <button onclick="openDetail(${server.id})" class="px-3 py-2 rounded bg-slate-800 hover:bg-slate-700 text-sm">View Details</button>
+            <a href="${INVITE_URL}" class="px-3 py-2 rounded bg-indigo-600 hover:bg-indigo-500 text-sm">Invite Bot</a>
+          </div>
+        </article>`;
+    }
+
+    async function loadGuilds() {
+      const params = new URLSearchParams({ page: String(currentPage) });
+      if (currentQuery) params.set("q", currentQuery);
+      const res = await fetch(`/api/public/guilds?${params.toString()}`);
+      const data = await res.json();
+      const items = data.items || [];
+      const list = document.getElementById("serverList");
+      list.innerHTML = items.map(cardTemplate).join("") || `<p class="text-slate-400">No matching servers found.</p>`;
+      renderStats(data.totals || { guilds: 0, users: 0, global_message_count: 0, uptime_seconds: 0 });
+      const pageInfo = data.pagination || {};
+      document.getElementById("prevBtn").disabled = !pageInfo.has_prev;
+      document.getElementById("nextBtn").disabled = !pageInfo.has_next;
+      document.getElementById("pageLabel").textContent = `Page ${pageInfo.page || 1}`;
+    }
+
+    async function openDetail(guildId) {
+      const pane = document.getElementById("serverDetail");
+      pane.classList.remove("hidden");
+      pane.innerHTML = `<p class="text-slate-400">Loading server details...</p>`;
+      const res = await fetch(`/api/public/guilds/${guildId}`);
+      const data = await res.json();
+      if (!res.ok) { pane.innerHTML = `<p class="text-red-400">${data.error || "Failed to fetch details."}</p>`; return; }
+      const g = data.guild;
+      pane.innerHTML = `
+        <h3 class="text-xl font-semibold mb-2">Server Detail</h3>
+        <div class="grid md:grid-cols-[80px,1fr] gap-4 items-start">
+          <img src="${g.icon_url || "https://cdn.discordapp.com/embed/avatars/0.png"}" class="w-20 h-20 rounded-xl object-cover" alt="${g.name}">
+          <div>
+            <p class="text-lg font-bold">${g.name}</p>
+            <p class="text-slate-400 mt-1">${g.description || "No public description available."}</p>
+            <ul class="mt-3 text-sm text-slate-300 space-y-1">
+              <li><strong>Member Count:</strong> ${fmtNumber(g.member_count)}</li>
+              <li><strong>Integration Status:</strong> ${g.bot_integration_status}</li>
+              <li><strong>Guild ID:</strong> ${g.id}</li>
+            </ul>
+          </div>
+        </div>`;
+      history.replaceState({}, "", `/server/${guildId}`);
+    }
+
+    document.getElementById("searchInput").addEventListener("input", async (event) => { currentQuery = (event.target.value || "").trim(); currentPage = 1; await loadGuilds(); });
+    document.getElementById("prevBtn").addEventListener("click", async () => { if (currentPage > 1) { currentPage--; await loadGuilds(); } });
+    document.getElementById("nextBtn").addEventListener("click", async () => { currentPage++; await loadGuilds(); });
+    document.getElementById("year").textContent = String(new Date().getFullYear());
+
+    (async () => { await loadGuilds(); if (initialGuildId) { await openDetail(initialGuildId); } })();
+  </script>
 </body>
 </html>
 """

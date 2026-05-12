@@ -1,123 +1,144 @@
-# Discord Top User Bot
+# Discord-Top-User
 
-A production-focused Discord bot with:
+![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white)
+![Discord](https://img.shields.io/badge/Discord-Bot-5865F2?logo=discord&logoColor=white)
+![License](https://img.shields.io/badge/License-MIT-green)
+![CI](https://img.shields.io/github/actions/workflow/status/deepdeyiitgn/Discord-Top-User/main.yml?label=CI)
+![MongoDB](https://img.shields.io/badge/Database-MongoDB-47A248?logo=mongodb&logoColor=white)
 
-- Activity leaderboard tracking
-- Setup/admin slash commands
-- Music engine with caching, CDN upload, and live dashboard
+Production-ready Discord ecosystem by **Deep Dey - The FUTURE IITIAN** with modular cogs for leaderboard automation, music administration, game engines, utility workflows, telemetry, and web dashboard tooling.
 
-## Features
+## Project Overview
 
-- Automated leaderboard reset cycle
-- JSON/HTML backup logs
-- Reward role handling for top members
-- Voice/music commands (`/music ...`)
-- 24/7 music mode controls
+Discord-Top-User is a full bot platform that combines:
 
-## Requirements
+- **Leaderboard Engine**: tracks message activity and computes top members.
+- **Music V2 Engine**: track management + streaming playback + admin dashboard.
+- **Gamification Suite**: interactive games, auto-games, quiz/TAD, and points.
+- **Utilities Admin**: keyword/auto-reply + moderation-friendly content tools.
+- **Digital Proxy Status Engine**: status profiles, alias detection, missed-pings vault.
+- **Telemetry Pipeline**: centralized error/activity/game/security reporting.
+- **Web Discovery Dashboard**: searchable public server listing + bot stats.
 
-- Python 3.10+
-- MongoDB URI
-- Discord bot token
-- FFmpeg (required for voice/music)
+## Key Features
 
-## Environment Variables
+### 1) Leaderboard
+- Guild settings for cycle timing, top count, channels, and role rewards.
+- Auto and manual resets with JSON/HTML backup exports.
+- Role re-assignment for current cycle winners.
 
-- `DISCORD_TOKEN` — Discord bot token
-- `MONGO_URI` — MongoDB connection URI
-- `PASSWORD` — Shared admin password for secure dashboards and Discord modals
-- `SPACE_PASSWORD` *(optional at runtime for `/music add` flow; entered securely via modal)*
+### 2) Music
+- Music command group with join/start/now-playing/queue controls.
+- Track management via Discord modals and secure web dashboard.
+- FFmpeg-backed playback and persistent session behavior.
 
-## Local Setup
+### 3) Games
+- Fast interaction games (e.g., scramble/math/toss/RPS/TTT/quiz/guessing).
+- Auto-game scheduler with role pinging and instant winner resolution.
+- Points + profile rank updates with telemetry logging.
+
+### 4) Utilities
+- Keyword auto-reply and managed content administration.
+- Utility commands for productivity and common server workflows.
+- Secure dashboard routes protected by password session auth.
+
+### 5) Security & Reliability
+- Password-gated sensitive actions.
+- Telemetry-backed exception logging.
+- API safety wrappers and resilient fallback behavior.
+
+---
+
+## Quick Start (Local Setup)
+
+### Prerequisites
+- Python **3.10+**
+- MongoDB connection URI
+- FFmpeg installed on host
+- Discord bot application + token
+
+### Install & Run
 
 ```bash
+cd /path/to/Discord-Top-User
 pip install -r requirements.txt
 python main.py
 ```
 
-## Deployment Guide
+---
 
-### Deploy with Docker
+## Deployment Guide (Render with `Docerfile`)
 
-> This repository intentionally uses `Docerfile` (name kept as-is).
+> This repository intentionally uses `Docerfile` (spelling preserved in project).
+
+### Render Web Service Steps
+
+1. Push repository to GitHub.
+2. In Render, create a **New Web Service** from this repository.
+3. Configure service to build using Docker and point to **`Docerfile`**.
+4. Set environment variables from the list below.
+5. Deploy and monitor logs.
+
+### Optional local Docker check
 
 ```bash
 docker build -f Docerfile -t discord-top-user .
-docker run -e DISCORD_TOKEN=your_token -e MONGO_URI=your_mongo_uri discord-top-user
+docker run --env-file .env discord-top-user
 ```
 
-### Deploy on Render (or similar)
+---
 
-1. Create a new service from this repository.
-2. Ensure build uses `Docerfile`.
-3. Set environment variables:
-   - `DISCORD_TOKEN`
-   - `MONGO_URI`
-   - `PASSWORD`
-   - `SPACE_PASSWORD`
-4. Deploy.
+## Environment Variables
 
-## Commands
+| Variable | Required | Description |
+|---|---|---|
+| `DISCORD_TOKEN` | Yes | Discord bot token |
+| `MONGO_URI` | Yes | MongoDB connection URI |
+| `PASSWORD` | Yes | Shared secure password for admin actions/modal gates |
+| `SPACE_PASSWORD` | Yes (music upload workflows) | Credential used for CDN upload operations |
 
-### Setup
+Optional deployment environment tuning can be added by your host/provider.
 
-- `/setup channel`
-- `/setup logs`
-- `/setup role`
-- `/setup days`
-- `/setup top_count`
-- `/setup reset`
-- `/setup hard_reset`
-- `/setup ping`
+---
 
-### Music
-
-- `/music help`
-- `/music join`
-- `/music leave`
-- `/music add`
-- `/music start`
-- `/music temp <link>`
-- `/music pause`
-- `/music resume`
-- `/music nowplaying`
-- `/music live`
-- `/music 247`
-
-### Utilities
-
-- `/now`
-- `/weather <city>`
-- `/links`
-- `/pomodoro [minutes]`
-
-### Game Admin
-
-- `/game add tad`
-- `/game add quiz`
-- `/game add autoreply`
-- `/game send message <target_channel>`
-
-## Project Structure
+## Repository Structure
 
 ```text
 cogs/
-  setup_commands.py
-  music_commands.py
   game_commands.py
+  music_commands.py
+  productivity_commands.py
+  proxy.py
+  setup_commands.py
   utility_commands.py
-audio_manager.py
-keep_alive.py
-telemetry.py
-database.py
+utils/
+  audio_manager.py
+  branding_view.py
+  discord_resilience.py
 main.py
+keep_alive.py
+database.py
+telemetry.py
 Docerfile
+.github/
 ```
 
-## Community & Policies
+---
+
+## Community & Maintenance
 
 - [Contributing](CONTRIBUTING.md)
 - [Code of Conduct](CODE_OF_CONDUCT.md)
 - [Security Policy](SECURITY.md)
-- [Changelog](CHANGELOG.md)
 - [License](LICENSE)
+- [Issue Templates](.github/ISSUE_TEMPLATE)
+
+---
+
+## Branding
+
+Built and maintained by **Deep Dey - The FUTURE IITIAN**.
+
+- Portfolio: https://deepdey.vercel.app/
+- Instagram: https://deepdey.vercel.app/insta
+- Contact: https://deepdey.vercel.app/contact

@@ -24,6 +24,7 @@ intents.message_content = True
 intents.members = True
 bot = commands.Bot(command_prefix="!", intents=intents, help_command=None)
 install_global_branding_enforcer()
+keep_alive.register_bot(bot)
 
 # Store start time for uptime tracking
 # Store start time for uptime tracking
