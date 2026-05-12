@@ -1130,6 +1130,7 @@ _DASHBOARD_HTML = """
       <a href="/" class="font-semibold text-lg">Discord Top User</a>
       <div class="flex flex-wrap gap-2 text-sm">
         <a href="/" class="px-3 py-2 rounded bg-slate-800 hover:bg-slate-700">Home</a>
+        <a href="/dashboard" class="px-3 py-2 rounded bg-slate-800 hover:bg-slate-700">Dashboard</a>
         <a href="/music" class="px-3 py-2 rounded bg-slate-800 hover:bg-slate-700">Music Admin</a>
         <a href="/utilities" class="px-3 py-2 rounded bg-slate-800 hover:bg-slate-700">Utilities Admin</a>
       </div>
