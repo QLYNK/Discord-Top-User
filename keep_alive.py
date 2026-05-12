@@ -625,10 +625,10 @@ async function editTrack(id) {
   const title = prompt('New title', t.title || '');
   if (!title) return;
   const artwork = prompt('New artwork URL', t.artwork_url || '') || '';
-  await fetch(`/api/music/tracks/${id}`, {
-    method: 'PUT',
+  await fetch('/api/music/edit', {
+    method: 'POST',
     headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({title, artwork_url: artwork})
+    body: JSON.stringify({track_id: id, title, artwork_url: artwork})
   });
   await refreshTracks();
 }

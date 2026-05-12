@@ -152,7 +152,7 @@ class _MusicAddModal(discord.ui.Modal, title="Add Music Track"):
         if not SPACE_PASSWORD:
             await interaction.response.send_message("❌ SPACE_PASSWORD is not configured.", ephemeral=True)
             return
-        if not secrets.compare_digest(str(self.password), PASSWORD):
+        if not secrets.compare_digest(self.password.value, PASSWORD):
             await interaction.response.send_message("❌ Invalid password.", ephemeral=True)
             return
 
@@ -160,9 +160,9 @@ class _MusicAddModal(discord.ui.Modal, title="Add Music Track"):
         source_file = None
         final_mp3 = None
         try:
-            source_file, extracted_title, extracted_artwork = await extract_from_url(str(self.link).strip())
-            title = str(self.track_title).strip() or extracted_title or "Untitled Track"
-            artwork_url = str(self.artwork).strip() or extracted_artwork or DEFAULT_ARTWORK
+            source_file, extracted_title, extracted_artwork = await extract_from_url(self.link.value.strip())
+            title = self.track_title.value.strip() or extracted_title or "Untitled Track"
+            artwork_url = self.artwork.value.strip() or extracted_artwork or DEFAULT_ARTWORK
             final_mp3 = await convert_to_96k_mp3(source_file, output_name=secrets.token_hex(8))
             cdn_url = await upload_to_cdn(final_mp3, SPACE_PASSWORD, title)
             if not cdn_url:
@@ -383,6 +383,8 @@ class MusicCommands(commands.Cog):
         await interaction.response.send_message(embed=embed, view=_base_view())
 
     @music_group.command(name="add", description="Add a track using secure modal upload flow")
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.checks.has_permissions(administrator=True)
     async def music_add(self, interaction: discord.Interaction) -> None:
         await interaction.response.send_modal(_MusicAddModal(self))
 

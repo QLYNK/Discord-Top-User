@@ -3,7 +3,6 @@ from discord.ext import commands, tasks
 import os
 import sys
 import json # Imports me add kar lena
-import traceback
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
 
