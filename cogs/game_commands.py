@@ -52,6 +52,20 @@ def _member_delta(member: discord.abc.User, delta: int) -> str:
     return _format_points(None if getattr(member, "bot", False) else delta)
 
 
+def _scramble_text(value: str) -> str:
+    chars = list(value)
+    if len(chars) < 2:
+        return value
+    for idx in range(len(chars) - 1, 0, -1):
+        swap_idx = secrets.randbelow(idx + 1)
+        chars[idx], chars[swap_idx] = chars[swap_idx], chars[idx]
+    scrambled = "".join(chars)
+    if scrambled.lower() == value.lower():
+        rotated = chars[1:] + chars[:1]
+        return "".join(rotated)
+    return scrambled
+
+
 # ── RPS View ─────────────────────────────────────────────────────────────────
 
 class RPSView(discord.ui.View):
@@ -335,9 +349,8 @@ class TTTView(discord.ui.View):
     def __init__(self, cog: "GameCommands", p1: discord.Member, p2: discord.Member):
         super().__init__(timeout=180)
         self.cog = cog
-        self.players = [p1, p2]
-        if secrets.randbelow(2):
-            self.players.reverse()
+        first_player = secrets.choice([p1, p2])
+        self.players = [first_player, p2 if first_player.id == p1.id else p1]
         self.current_turn = 0
         self.board: list[list[str]] = [["", "", ""], ["", "", ""], ["", "", ""]]
 
@@ -729,6 +742,89 @@ class GameCommands(commands.Cog):
             players=players,
         )
 
+    async def _run_public_challenge(
+        self,
+        *,
+        interaction: discord.Interaction,
+        game_name: str,
+        prompt_title: str,
+        prompt_description: str,
+        expected_answer: str,
+        timeout_seconds: int = 20,
+    ):
+        embed = discord.Embed(
+            title=prompt_title,
+            description=prompt_description,
+            color=0x5865F2,
+        )
+        embed.set_footer(text=f"Answer in this channel within {timeout_seconds}s • an app by deep")
+        await interaction.response.send_message(embed=embed, view=_branding_view())
+
+        def _check(message: discord.Message) -> bool:
+            return (
+                message.guild is not None
+                and interaction.guild is not None
+                and message.guild.id == interaction.guild.id
+                and message.channel.id == interaction.channel_id
+                and not message.author.bot
+            )
+
+        try:
+            response = await self.bot.wait_for("message", timeout=timeout_seconds, check=_check)
+        except asyncio.TimeoutError:
+            result_embed = discord.Embed(
+                title=f"{game_name} — Result",
+                description="⏰ No one answered in time. No points changed.",
+                color=0x5865F2,
+            )
+            result_embed.add_field(name="Point Change", value="0", inline=False)
+            result_embed.set_footer(text="an app by deep")
+            await interaction.followup.send(embed=result_embed, view=_branding_view())
+            asyncio.create_task(
+                self._record_game_outcome(
+                    guild=interaction.guild,
+                    game_name=game_name,
+                    result="No response (timeout)",
+                    profile_updates=[],
+                    players=[],
+                )
+            )
+            return
+
+        given = response.content.strip()
+        is_correct = secrets.compare_digest(given.lower(), expected_answer.lower())
+        points = AUTO_GAME_WIN_POINTS if is_correct else AUTO_GAME_LOSS_POINTS
+        result_text = "Correct answer" if is_correct else "Wrong answer"
+        result_embed = discord.Embed(
+            title=f"{game_name} — Result",
+            description=(
+                f"{'✅ Correct!' if is_correct else '❌ Wrong!'}\n"
+                f"Answer by {response.author.mention}\n"
+                f"Expected: **{expected_answer}**"
+            ),
+            color=0x5865F2,
+        )
+        result_embed.add_field(name="Point Change", value=_format_points(points), inline=False)
+        result_embed.set_footer(text="an app by deep")
+        await interaction.followup.send(embed=result_embed, view=_branding_view())
+        asyncio.create_task(
+            self._record_game_outcome(
+                guild=interaction.guild,
+                game_name=game_name,
+                result=result_text,
+                profile_updates=[
+                    {
+                        "member": response.author,
+                        "points": points,
+                        "wins": 1 if points > 0 else 0,
+                        "losses": 1 if points < 0 else 0,
+                        "total_games": 1,
+                    }
+                ],
+                players=[(response.author.display_name, response.author.id, _format_points(points))],
+            )
+        )
+
     # ── Keyword cache ────────────────────────────────────────────────────────
 
     @tasks.loop(seconds=KEYWORD_CACHE_TTL)
@@ -757,6 +853,9 @@ class GameCommands(commands.Cog):
                 "**`/game tad <truth|dare>`** — Get a random Truth or Dare question.\n"
                 "**`/game rps <@opponent>`** — Rock Paper Scissors vs a user (or me!).\n"
                 "**`/game ttt <@opponent>`** — Tic-Tac-Toe in Discord buttons.\n"
+                "**`/game minesweeper <row> <column>`** — Pick a safe tile against a hidden mine.\n"
+                "**`/game scramble`** — Public word scramble challenge.\n"
+                "**`/game math`** — Public math challenge.\n"
                 "**`/game toss <heads|tails>`** — Quick coin toss for economy points.\n"
                 "**`/game quiz`** — Answer a random quiz question.\n"
                 "**`/game help`** — Shows this message.\n"
@@ -876,6 +975,105 @@ class GameCommands(commands.Cog):
             content=f"{challenger.mention} vs {opponent.mention}",
             embed=embed,
             view=view,
+        )
+
+    @game_group.command(name="minesweeper", description="Pick a tile and avoid the hidden mine")
+    @app_commands.describe(row="Row number (1-3)", column="Column number (1-3)")
+    async def game_minesweeper(
+        self,
+        interaction: discord.Interaction,
+        row: app_commands.Range[int, 1, 3],
+        column: app_commands.Range[int, 1, 3],
+    ):
+        target = (row - 1, column - 1)
+        all_cells = [(r, c) for r in range(3) for c in range(3)]
+        mine_cell = secrets.choice(all_cells)
+        won = target != mine_cell
+        points = DIRECT_GAME_WIN_POINTS if won else DIRECT_GAME_LOSS_POINTS
+
+        board_lines = []
+        for r in range(3):
+            line = []
+            for c in range(3):
+                if (r, c) == target and won:
+                    line.append("✅")
+                elif (r, c) == target and not won:
+                    line.append("💣")
+                else:
+                    line.append("⬜")
+            board_lines.append(" ".join(line))
+
+        embed = discord.Embed(
+            title="💣 Minesweeper",
+            description=(
+                f"You chose **Row {row}, Col {column}**.\n"
+                f"{'🎉 Safe pick! You win.' if won else '💥 You hit the mine and lost.'}\n\n"
+                + "\n".join(board_lines)
+            ),
+            color=0x5865F2,
+        )
+        embed.add_field(name="Point Change", value=_format_points(points), inline=False)
+        embed.set_footer(text="an app by deep")
+        await interaction.response.send_message(embed=embed, view=_branding_view())
+        asyncio.create_task(
+            self._record_game_outcome(
+                guild=interaction.guild,
+                game_name="Minesweeper",
+                result=f"{interaction.user.display_name} {'won' if won else 'lost'}",
+                profile_updates=[
+                    {
+                        "member": interaction.user,
+                        "points": points,
+                        "wins": 1 if points > 0 else 0,
+                        "losses": 1 if points < 0 else 0,
+                        "total_games": 1,
+                    }
+                ],
+                players=[(interaction.user.display_name, interaction.user.id, _format_points(points))],
+            )
+        )
+
+    @game_group.command(name="scramble", description="Start a public word scramble challenge")
+    async def game_scramble(self, interaction: discord.Interaction):
+        words = [
+            "discord",
+            "economy",
+            "telemetry",
+            "python",
+            "mongodb",
+            "ranking",
+            "challenge",
+            "profile",
+        ]
+        answer = secrets.choice(words)
+        scrambled = _scramble_text(answer)
+        await self._run_public_challenge(
+            interaction=interaction,
+            game_name="Word Scramble",
+            prompt_title="🔤 Word Scramble",
+            prompt_description=f"Unscramble this word: **{scrambled}**",
+            expected_answer=answer,
+            timeout_seconds=20,
+        )
+
+    @game_group.command(name="math", description="Start a public math challenge")
+    async def game_math(self, interaction: discord.Interaction):
+        left = secrets.randbelow(41) + 10
+        right = secrets.randbelow(31) + 1
+        operator = secrets.choice(["+", "-", "*"])
+        if operator == "+":
+            answer = left + right
+        elif operator == "-":
+            answer = left - right
+        else:
+            answer = left * right
+        await self._run_public_challenge(
+            interaction=interaction,
+            game_name="Math Challenge",
+            prompt_title="🧮 Math Challenge",
+            prompt_description=f"Solve: **{left} {operator} {right} = ?**",
+            expected_answer=str(answer),
+            timeout_seconds=20,
         )
 
     # /game toss

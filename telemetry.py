@@ -64,8 +64,10 @@ async def send_game_telemetry(
     await send_master_log(
         bot,
         f"Game Result • {game_name}",
-        result,
+        "Game activity recorded.",
         fields=[
+            ("Game", game_name, True),
+            ("Result", result, True),
             ("Server", f"{guild_name} ({guild_id})", False),
             ("Players", "\n".join(player_lines) or "-", False),
             ("Point Changes", "\n".join(point_lines) or "-", False),
