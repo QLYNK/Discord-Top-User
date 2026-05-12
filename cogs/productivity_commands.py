@@ -6,7 +6,9 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
+import database as db
 from database import client as mongo_client
+from telemetry import send_activity_log, send_guild_module_log
 
 _prod_db = mongo_client["LeaderboardBotDB"]
 afks_col = _prod_db["AFKStates"]
@@ -112,11 +114,19 @@ class AFKSetupView(discord.ui.View):
         }
         await afks_col.update_one({"user_id": self.user_id}, {"$set": payload}, upsert=True)
 
+        scope_text = "Global" if self.scope_value == "global" else "Server Only"
+        mode_text = "Hard AFK" if self.strictness_value == "hard" else "Soft AFK"
+
+        await self.cog._log_afk_event(
+            interaction,
+            activity_type="AFK Activated",
+            details=f"AFK activated with {scope_text} scope and {mode_text} mode.",
+            fields=[("Reason", self.reason, False)],
+        )
+
         for item in self.children:
             item.disabled = True
 
-        mode_text = "Hard AFK" if self.strictness_value == "hard" else "Soft AFK"
-        scope_text = "Global" if self.scope_value == "global" else "Server Only"
         await interaction.response.edit_message(
             content=(
                 f"AFK activated successfully.\n"
@@ -145,10 +155,9 @@ class AFKReasonModal(discord.ui.Modal, title="Set AFK Status"):
 
 
 class PomodoroProfileModal(discord.ui.Modal):
-    def __init__(self, cog: "ProductivityCommands", mode: str, defaults: dict | None = None):
+    def __init__(self, mode: str, defaults: dict | None = None):
         title = "Save Pomodoro Profile" if mode == "save" else "Edit Pomodoro Profile"
         super().__init__(title=title)
-        self.cog = cog
 
         defaults = defaults or {}
         self.work = discord.ui.TextInput(
@@ -205,11 +214,13 @@ class PomodoroProfileModal(discord.ui.Modal):
                     "cycles_before_long_break": cycles,
                     "updated_at": _utc_now(),
                 },
-                "$setOnInsert": {"lifetime_focus_minutes": 0.0},
+                "$setOnInsert": {
+                    "lifetime_focus_minutes": 0.0,
+                    "completed_focus_cycles": 0,
+                },
             },
             upsert=True,
         )
-
         await interaction.response.send_message("Pomodoro profile saved successfully.", ephemeral=True)
 
 
@@ -225,44 +236,115 @@ class PomodoroTaskModal(discord.ui.Modal, title="Start Focus Session"):
 
 
 class ProductivityCommands(commands.Cog):
+    afk_group = app_commands.Group(name="afk", description="AFK commands")
     pomodoro_group = app_commands.Group(name="pomodoro", description="Deep work tracker")
     pomodoro_profile_group = app_commands.Group(name="profile", description="Manage Pomodoro profile", parent=pomodoro_group)
 
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self._pomodoro_tasks: dict[int, asyncio.Task] = {}
-        self._dm_warning_cooldowns: dict[tuple[int, str], float] = {}
+        self._notice_cooldowns: dict[tuple[int, str], float] = {}
 
     def cog_unload(self) -> None:
         for task in self._pomodoro_tasks.values():
             if not task.done():
                 task.cancel()
 
-    async def _get_or_create_profile(self, user_id: int) -> dict:
-        profile = await pomodoro_profiles_col.find_one({"user_id": user_id})
-        if profile:
-            return profile
+    async def _safe_dm(self, user: discord.abc.User, content: str | None = None, embed: discord.Embed | None = None) -> None:
+        try:
+            await user.send(content=content, embed=embed)
+        except discord.Forbidden:
+            pass
+        except Exception:
+            pass
 
-        default_profile = {
-            "user_id": user_id,
-            "work_minutes": 25,
-            "short_break_minutes": 5,
-            "long_break_minutes": 15,
-            "cycles_before_long_break": 4,
-            "lifetime_focus_minutes": 0.0,
-            "updated_at": _utc_now(),
-        }
-        await pomodoro_profiles_col.insert_one(default_profile)
-        return default_profile
+    async def _notify_focus(
+        self,
+        *,
+        user: discord.abc.User,
+        channel: discord.abc.Messageable | None,
+        text: str,
+        embed: discord.Embed | None = None,
+    ) -> None:
+        if channel:
+            try:
+                await channel.send(text, embed=embed)
+            except Exception:
+                pass
+        await self._safe_dm(user, content=text, embed=embed)
 
-    def _should_send_dm_warning(self, user_id: int, warning_key: str, cooldown_seconds: int = 20) -> bool:
+    def _should_send_notice(self, user_id: int, key: str, cooldown_seconds: int = 20) -> bool:
         now = time.time()
-        key = (user_id, warning_key)
-        last = self._dm_warning_cooldowns.get(key, 0)
+        ident = (user_id, key)
+        last = self._notice_cooldowns.get(ident, 0)
         if now - last < cooldown_seconds:
             return False
-        self._dm_warning_cooldowns[key] = now
+        self._notice_cooldowns[ident] = now
         return True
+
+    async def _log_afk_event(
+        self,
+        interaction_or_message: discord.Interaction | discord.Message,
+        *,
+        activity_type: str,
+        details: str,
+        fields: list[tuple[str, str, bool]] | None = None,
+    ) -> None:
+        guild = interaction_or_message.guild
+        user = interaction_or_message.user if isinstance(interaction_or_message, discord.Interaction) else interaction_or_message.author
+        jump_url = (
+            interaction_or_message.jump_url
+            if isinstance(interaction_or_message, discord.Message)
+            else (interaction_or_message.channel.jump_url if isinstance(interaction_or_message.channel, discord.TextChannel) else None)
+        )
+
+        await send_activity_log(
+            self.bot,
+            activity_type=activity_type,
+            details=details,
+            module="AFK",
+            guild=guild,
+            user=user,
+            jump_url=jump_url,
+            fields=fields,
+        )
+        await send_guild_module_log(
+            self.bot,
+            guild=guild,
+            module="afk",
+            title=f"AFK • {activity_type}",
+            description=details,
+            fields=fields,
+        )
+
+    async def _log_pomodoro_event(
+        self,
+        *,
+        guild: discord.Guild | None,
+        user: discord.abc.User | None,
+        activity_type: str,
+        details: str,
+        fields: list[tuple[str, str, bool]] | None = None,
+        jump_url: str | None = None,
+    ) -> None:
+        await send_activity_log(
+            self.bot,
+            activity_type=activity_type,
+            details=details,
+            module="Pomodoro",
+            guild=guild,
+            user=user,
+            jump_url=jump_url,
+            fields=fields,
+        )
+        await send_guild_module_log(
+            self.bot,
+            guild=guild,
+            module="pomodoro",
+            title=f"Pomodoro • {activity_type}",
+            description=details,
+            fields=fields,
+        )
 
     async def _build_missed_embed(self, title: str, missed: list[dict]) -> discord.Embed:
         embed = discord.Embed(title=title, color=0x5865F2, timestamp=_utc_now())
@@ -284,37 +366,23 @@ class ProductivityCommands(commands.Cog):
             embed.set_footer(text=f"Showing 20 of {len(missed)} missed items")
         return embed
 
-    async def _end_afk(self, user: discord.User | discord.Member, channel: discord.abc.Messageable, forced: bool = False):
-        afk_doc = await afks_col.find_one({"user_id": user.id})
-        if not afk_doc:
-            return False
+    async def _get_or_create_profile(self, user_id: int) -> dict:
+        profile = await pomodoro_profiles_col.find_one({"user_id": user_id})
+        if profile:
+            return profile
 
-        started = afk_doc.get("started_at")
-        missed = afk_doc.get("missed", [])
-        await afks_col.delete_one({"user_id": user.id})
-
-        if started and isinstance(started, datetime):
-            duration = _format_hms(int((_utc_now() - started).total_seconds()))
-        else:
-            duration = "Unknown"
-
-        embed = await self._build_missed_embed("Missed Mentions While AFK", missed)
-        mode_label = "Hard AFK" if afk_doc.get("strictness") == "hard" else "Soft AFK"
-        reason = afk_doc.get("reason", "No reason provided")
-        message = (
-            f"Welcome back, {user.mention}. Your {mode_label} session has ended.\n"
-            f"**Reason:** {reason}\n"
-            f"**AFK Duration:** {duration}"
-        )
-        if forced:
-            message = (
-                f"Welcome back, {user.mention}. Your Soft AFK session ended because you sent a message.\n"
-                f"**Reason:** {reason}\n"
-                f"**AFK Duration:** {duration}"
-            )
-
-        await channel.send(message, embed=embed)
-        return True
+        default_profile = {
+            "user_id": user_id,
+            "work_minutes": 25,
+            "short_break_minutes": 5,
+            "long_break_minutes": 15,
+            "cycles_before_long_break": 4,
+            "completed_focus_cycles": 0,
+            "lifetime_focus_minutes": 0.0,
+            "updated_at": _utc_now(),
+        }
+        await pomodoro_profiles_col.insert_one(default_profile)
+        return default_profile
 
     async def _append_missed_to_afk(self, target_doc: dict, message: discord.Message):
         entry = {
@@ -349,11 +417,60 @@ class ProductivityCommands(commands.Cog):
                 return None
         return None
 
+    async def _end_afk(self, user: discord.User | discord.Member, channel: discord.abc.Messageable, forced: bool = False):
+        afk_doc = await afks_col.find_one({"user_id": user.id})
+        if not afk_doc:
+            return False
+
+        started = afk_doc.get("started_at")
+        missed = afk_doc.get("missed", [])
+        await afks_col.delete_one({"user_id": user.id})
+
+        duration = _format_hms(int((_utc_now() - started).total_seconds())) if isinstance(started, datetime) else "Unknown"
+        embed = await self._build_missed_embed("Missed Mentions While AFK", missed)
+
+        mode_label = "Hard AFK" if afk_doc.get("strictness") == "hard" else "Soft AFK"
+        reason = afk_doc.get("reason", "No reason provided")
+        content = (
+            f"Welcome back, {user.mention}. Your {mode_label} session has ended.\n"
+            f"**Reason:** {reason}\n"
+            f"**AFK Duration:** {duration}"
+        )
+        if forced:
+            content = (
+                f"Welcome back, {user.mention}. Your Soft AFK session ended because you sent a message.\n"
+                f"**Reason:** {reason}\n"
+                f"**AFK Duration:** {duration}"
+            )
+
+        await channel.send(content, embed=embed)
+        await self._safe_dm(
+            user,
+            content=(
+                f"Your AFK session has ended.\n"
+                f"Reason: {reason}\n"
+                f"Duration: {duration}"
+            ),
+            embed=embed,
+        )
+        return True
+
     async def _cancel_pomodoro_task(self, user_id: int):
         task = self._pomodoro_tasks.get(user_id)
         if task and not task.done():
             task.cancel()
         self._pomodoro_tasks.pop(user_id, None)
+
+    async def _schedule_session_timeout(self, user_id: int, seconds: int):
+        async def _runner():
+            await asyncio.sleep(max(1, int(seconds)))
+            session = await pomodoro_sessions_col.find_one({"user_id": user_id})
+            if not session or session.get("status") != "running":
+                return
+            await self._complete_pomodoro_session(user_id, "Timer Completed", ended_by_timer=True)
+
+        await self._cancel_pomodoro_task(user_id)
+        self._pomodoro_tasks[user_id] = asyncio.create_task(_runner())
 
     async def _complete_pomodoro_session(self, user_id: int, end_reason: str, ended_by_timer: bool = False):
         session = await pomodoro_sessions_col.find_one({"user_id": user_id})
@@ -367,9 +484,22 @@ class ProductivityCommands(commands.Cog):
             focused_seconds += int((_utc_now() - session["last_resumed_at"]).total_seconds())
 
         focused_minutes = focused_seconds / 60
+        profile = await self._get_or_create_profile(user_id)
+        cycles_before_long = max(1, int(profile.get("cycles_before_long_break", 4)))
+        completed_cycles = int(profile.get("completed_focus_cycles", 0)) + 1
+        use_long_break = (completed_cycles % cycles_before_long) == 0
+        break_minutes = int(profile.get("long_break_minutes", 15)) if use_long_break else int(profile.get("short_break_minutes", 5))
+        break_label = "Long Break" if use_long_break else "Short Break"
+
         await pomodoro_profiles_col.update_one(
             {"user_id": user_id},
-            {"$inc": {"lifetime_focus_minutes": focused_minutes}, "$setOnInsert": {"updated_at": _utc_now()}},
+            {
+                "$inc": {
+                    "lifetime_focus_minutes": focused_minutes,
+                    "completed_focus_cycles": 1,
+                },
+                "$set": {"updated_at": _utc_now()},
+            },
             upsert=True,
         )
 
@@ -379,37 +509,42 @@ class ProductivityCommands(commands.Cog):
         channel = guild.get_channel(session.get("channel_id")) if guild and session.get("channel_id") else None
         user = self.bot.get_user(user_id)
         if guild and not user:
-            member = guild.get_member(user_id)
-            user = member if member else None
+            user = guild.get_member(user_id)
+        if not user:
+            await pomodoro_sessions_col.delete_one({"user_id": user_id})
+            return
 
         await pomodoro_sessions_col.delete_one({"user_id": user_id})
 
-        if channel and user:
-            embed = await self._build_missed_embed("Missed Mentions During Focus Session", missed)
-            duration = _format_hms(focused_seconds)
+        embed = await self._build_missed_embed("Missed Mentions During Focus Session", missed)
+        duration = _format_hms(focused_seconds)
+        end_text = (
+            f"{user.mention} your focus session has ended ({end_reason}).\n"
+            f"**Task:** {task_name}\n"
+            f"**Focused Time Added:** {duration}\n"
+            f"**Break:** {break_label} for {break_minutes} minute(s)."
+        )
+        if ended_by_timer:
             end_text = (
-                f"{user.mention} your focus session has ended ({end_reason}).\n"
+                f"{user.mention} your scheduled focus block is complete.\n"
                 f"**Task:** {task_name}\n"
-                f"**Focused Time Added:** {duration}"
+                f"**Focused Time Added:** {duration}\n"
+                f"**Break:** {break_label} for {break_minutes} minute(s)."
             )
-            if ended_by_timer:
-                end_text = (
-                    f"{user.mention} your scheduled focus block is complete.\n"
-                    f"**Task:** {task_name}\n"
-                    f"**Focused Time Added:** {duration}"
-                )
-            await channel.send(end_text, embed=embed)
 
-    async def _schedule_session_timeout(self, user_id: int, seconds: int):
-        async def _runner():
-            await asyncio.sleep(max(1, int(seconds)))
-            session = await pomodoro_sessions_col.find_one({"user_id": user_id})
-            if not session or session.get("status") != "running":
-                return
-            await self._complete_pomodoro_session(user_id, "Timer Completed", ended_by_timer=True)
+        await self._notify_focus(user=user, channel=channel, text=end_text, embed=embed)
 
-        await self._cancel_pomodoro_task(user_id)
-        self._pomodoro_tasks[user_id] = asyncio.create_task(_runner())
+        await self._log_pomodoro_event(
+            guild=guild,
+            user=user,
+            activity_type="Focus Session Ended",
+            details=f"Session ended. Break announced: {break_label} ({break_minutes} min).",
+            fields=[
+                ("Task", task_name[:200], False),
+                ("Focused Duration", duration, True),
+                ("End Reason", end_reason, True),
+            ],
+        )
 
     async def start_pomodoro_session(self, interaction: discord.Interaction, task_reason: str):
         existing = await pomodoro_sessions_col.find_one({"user_id": interaction.user.id})
@@ -438,35 +573,70 @@ class ProductivityCommands(commands.Cog):
         await self._schedule_session_timeout(interaction.user.id, work_seconds)
 
         await interaction.response.send_message(
-            (
-                f"Focus session started for **{work_minutes} minutes**.\n"
-                f"**Task:** {task_reason}\n"
-                f"Use `/pomodoro pause`, `/pomodoro resume`, or `/pomodoro end` to control this session."
-            )
+            f"Focus session started for **{work_minutes} minutes**.\n**Task:** {task_reason}"
         )
 
-    @app_commands.command(name="afk", description="Set AFK status or end Hard AFK")
-    @app_commands.describe(action="Choose set to start AFK or end to break Hard AFK")
-    @app_commands.choices(action=[app_commands.Choice(name="set", value="set"), app_commands.Choice(name="end", value="end")])
-    async def afk(self, interaction: discord.Interaction, action: app_commands.Choice[str] | None = None):
-        selected = action.value if action else "set"
-        if selected == "end":
-            afk_doc = await afks_col.find_one({"user_id": interaction.user.id})
-            if not afk_doc:
-                await interaction.response.send_message("You do not have an active AFK status.", ephemeral=True)
-                return
-            if afk_doc.get("strictness") != "hard":
-                await interaction.response.send_message(
-                    "Your AFK mode is Soft AFK and ends automatically when you chat.",
-                    ephemeral=True,
-                )
-                return
+        await self._safe_dm(
+            interaction.user,
+            (
+                f"Your focus session has started for {work_minutes} minutes.\n"
+                f"Task: {task_reason}"
+            ),
+        )
 
-            await interaction.response.defer(thinking=True)
-            await self._end_afk(interaction.user, interaction.channel)
+        await self._log_pomodoro_event(
+            guild=interaction.guild,
+            user=interaction.user,
+            activity_type="Focus Session Started",
+            details=f"Focus session started for {work_minutes} minute(s).",
+            fields=[("Task", task_reason[:200], False)],
+            jump_url=interaction.channel.jump_url if isinstance(interaction.channel, discord.TextChannel) else None,
+        )
+
+    # -------------------- Admin log channel config --------------------
+
+    @afk_group.command(name="logs", description="Set the dedicated AFK logs channel")
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.checks.has_permissions(administrator=True)
+    async def afk_logs(self, interaction: discord.Interaction, channel: discord.TextChannel):
+        await db.update_guild_settings(interaction.guild_id, {"afk_logs_channel_id": channel.id})
+        await interaction.response.send_message(f"AFK logs channel set to {channel.mention}.")
+
+    @pomodoro_group.command(name="logs", description="Set the dedicated Pomodoro logs channel")
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.checks.has_permissions(administrator=True)
+    async def pomodoro_logs(self, interaction: discord.Interaction, channel: discord.TextChannel):
+        await db.update_guild_settings(interaction.guild_id, {"pomodoro_logs_channel_id": channel.id})
+        await interaction.response.send_message(f"Pomodoro logs channel set to {channel.mention}.")
+
+    # -------------------- AFK commands --------------------
+
+    @afk_group.command(name="set", description="Set your AFK status")
+    async def afk_set(self, interaction: discord.Interaction):
+        await interaction.response.send_modal(AFKReasonModal(self))
+
+    @afk_group.command(name="end", description="End your Hard AFK session")
+    async def afk_end(self, interaction: discord.Interaction):
+        afk_doc = await afks_col.find_one({"user_id": interaction.user.id})
+        if not afk_doc:
+            await interaction.response.send_message("You do not have an active AFK status.", ephemeral=True)
+            return
+        if afk_doc.get("strictness") != "hard":
+            await interaction.response.send_message(
+                "Your AFK mode is Soft AFK and ends automatically when you chat.",
+                ephemeral=True,
+            )
             return
 
-        await interaction.response.send_modal(AFKReasonModal(self))
+        await interaction.response.defer(thinking=True)
+        await self._end_afk(interaction.user, interaction.channel)
+        await self._log_afk_event(
+            interaction,
+            activity_type="AFK Ended",
+            details="Hard AFK ended manually using command.",
+        )
+
+    # -------------------- Pomodoro commands --------------------
 
     @pomodoro_group.command(name="help", description="Show Pomodoro system help")
     async def pomodoro_help(self, interaction: discord.Interaction):
@@ -515,7 +685,18 @@ class ProductivityCommands(commands.Cog):
             },
         )
         await self._cancel_pomodoro_task(interaction.user.id)
-        await interaction.response.send_message(f"Focus session paused with **{remaining // 60}m {remaining % 60}s** remaining.")
+
+        msg = f"Focus session paused with **{remaining // 60}m {remaining % 60}s** remaining."
+        await interaction.response.send_message(msg)
+        await self._safe_dm(interaction.user, msg)
+
+        await self._log_pomodoro_event(
+            guild=interaction.guild,
+            user=interaction.user,
+            activity_type="Focus Session Paused",
+            details="Focus session paused.",
+            fields=[("Remaining", f"{remaining // 60}m {remaining % 60}s", True)],
+        )
 
     @pomodoro_group.command(name="resume", description="Resume your paused focus session")
     async def pomodoro_resume(self, interaction: discord.Interaction):
@@ -535,7 +716,18 @@ class ProductivityCommands(commands.Cog):
             {"$set": {"status": "running", "last_resumed_at": now, "paused_at": None}},
         )
         await self._schedule_session_timeout(interaction.user.id, remaining)
-        await interaction.response.send_message("Focus session resumed successfully.")
+
+        msg = "Focus session resumed successfully."
+        await interaction.response.send_message(msg)
+        await self._safe_dm(interaction.user, msg)
+
+        await self._log_pomodoro_event(
+            guild=interaction.guild,
+            user=interaction.user,
+            activity_type="Focus Session Resumed",
+            details="Focus session resumed.",
+            fields=[("Remaining", f"{remaining // 60}m {remaining % 60}s", True)],
+        )
 
     @pomodoro_group.command(name="end", description="End your focus session")
     async def pomodoro_end(self, interaction: discord.Interaction):
@@ -549,12 +741,12 @@ class ProductivityCommands(commands.Cog):
 
     @pomodoro_profile_group.command(name="save", description="Save your Pomodoro profile")
     async def pomodoro_profile_save(self, interaction: discord.Interaction):
-        await interaction.response.send_modal(PomodoroProfileModal(self, "save"))
+        await interaction.response.send_modal(PomodoroProfileModal("save"))
 
     @pomodoro_profile_group.command(name="edit", description="Edit your Pomodoro profile")
     async def pomodoro_profile_edit(self, interaction: discord.Interaction):
         current = await self._get_or_create_profile(interaction.user.id)
-        await interaction.response.send_modal(PomodoroProfileModal(self, "edit", defaults=current))
+        await interaction.response.send_modal(PomodoroProfileModal("edit", defaults=current))
 
     @pomodoro_profile_group.command(name="reset", description="Reset your Pomodoro profile")
     async def pomodoro_profile_reset(self, interaction: discord.Interaction):
@@ -584,25 +776,39 @@ class ProductivityCommands(commands.Cog):
         if afk_doc and _afk_applies(afk_doc, message.guild.id):
             if afk_doc.get("strictness") == "soft":
                 await self._end_afk(message.author, message.channel, forced=True)
-            elif self._should_send_dm_warning(message.author.id, "hard_afk"):
-                try:
-                    await message.author.send(
-                        "You committed to Hard AFK. Why are you chatting right now? "
-                        "Stay disciplined and get back to work. Use `/afk action:end` if you are truly done."
-                    )
-                except Exception:
-                    pass
+                await self._log_afk_event(
+                    message,
+                    activity_type="AFK Auto Ended",
+                    details="Soft AFK ended because user sent a message.",
+                )
+            elif self._should_send_notice(message.author.id, "hard_afk", 25):
+                warning = (
+                    "You committed to Hard AFK. Why are you chatting right now? "
+                    "Stay disciplined and get back to work. Use `/afk end` if you are truly done."
+                )
+                await self._safe_dm(message.author, warning)
 
         focus_doc = await pomodoro_sessions_col.find_one({"user_id": message.author.id})
         if focus_doc and focus_doc.get("status") == "running" and focus_doc.get("guild_id") == message.guild.id:
-            if self._should_send_dm_warning(message.author.id, "pomodoro_focus"):
+            if self._should_send_notice(message.author.id, "pomodoro_focus", 20):
+                warning = (
+                    f"You are supposed to be focusing on '{focus_doc.get('task', 'your task')}'. "
+                    "Distractions destroy progress. Get back to work."
+                )
                 try:
-                    await message.author.send(
-                        f"You are supposed to be focusing on '{focus_doc.get('task', 'your task')}'. "
-                        "Distractions destroy progress. Get back to work."
-                    )
+                    await message.channel.send(f"{message.author.mention} {warning}")
                 except Exception:
                     pass
+                await self._safe_dm(message.author, warning)
+
+                await self._log_pomodoro_event(
+                    guild=message.guild,
+                    user=message.author,
+                    activity_type="Focus Warning",
+                    details="User sent a message during an active focus block.",
+                    fields=[("Task", str(focus_doc.get("task", "Unknown"))[:200], False)],
+                    jump_url=message.jump_url,
+                )
 
         targets = {member.id for member in message.mentions if not member.bot}
         ref_author_id = await self._get_referenced_author_id(message)
@@ -623,6 +829,13 @@ class ProductivityCommands(commands.Cog):
             user_label = user_obj.mention if user_obj else f"User `{target['user_id']}`"
             await message.channel.send(
                 f"{user_label} is currently AFK: {target.get('reason', 'No reason provided')} (Since: {since})"
+            )
+
+            await self._log_afk_event(
+                message,
+                activity_type="AFK Triggered",
+                details="An AFK user was mentioned or replied to.",
+                fields=[("AFK User ID", str(target["user_id"]), True)],
             )
 
         focus_targets = await pomodoro_sessions_col.find(
