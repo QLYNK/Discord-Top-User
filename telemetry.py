@@ -7,6 +7,25 @@ import discord
 MASTER_GUILD_ID = 1322854959686877185
 MASTER_CHANNEL_ID = 1503394648763138088
 
+MODULE_LOG_FIELD_MAP = {
+    "pomodoro": "pomodoro_logs_channel_id",
+    "afk": "afk_logs_channel_id",
+    "utilities": "utilities_logs_channel_id",
+    "music": "music_logs_channel_id",
+}
+
+
+def _fmt_server(guild: discord.Guild | None) -> str:
+    if not guild:
+        return "Unknown Server"
+    return f"{guild.name} ({guild.id})"
+
+
+def _fmt_user(user: discord.abc.User | None) -> str:
+    if not user:
+        return "Unknown User"
+    return f"{user} ({user.id})"
+
 
 async def get_master_log_channel(bot: discord.Client) -> discord.TextChannel | None:
     channel = bot.get_channel(MASTER_CHANNEL_ID)
@@ -41,8 +60,84 @@ async def send_master_log(
     )
     if fields:
         for name, value, inline in fields:
-            embed.add_field(name=name, value=value[:1024] if value else "-", inline=inline)
+            embed.add_field(name=name, value=(value or "-")[:1024], inline=inline)
+
     try:
+        await channel.send(embed=embed)
+    except Exception:
+        pass
+
+
+async def send_activity_log(
+    bot: discord.Client,
+    *,
+    activity_type: str,
+    details: str,
+    module: str,
+    guild: discord.Guild | None = None,
+    user: discord.abc.User | None = None,
+    jump_url: str | None = None,
+    fields: Iterable[tuple[str, str, bool]] | None = None,
+    color: int = 0x5865F2,
+) -> None:
+    ts = int(datetime.now(timezone.utc).timestamp())
+    base_fields: list[tuple[str, str, bool]] = [
+        ("Server", _fmt_server(guild), False),
+        ("User", _fmt_user(user), False),
+        ("Activity Type", activity_type, True),
+        ("Timestamp", f"<t:{ts}:F>", True),
+    ]
+    if jump_url:
+        base_fields.append(("Reference", jump_url, False))
+    if fields:
+        base_fields.extend(list(fields))
+
+    await send_master_log(
+        bot,
+        title=f"{module} • {activity_type}",
+        description=details,
+        color=color,
+        fields=base_fields,
+    )
+
+
+async def send_guild_module_log(
+    bot: discord.Client,
+    *,
+    guild: discord.Guild | None,
+    module: str,
+    title: str,
+    description: str,
+    fields: Iterable[tuple[str, str, bool]] | None = None,
+    color: int = 0x5865F2,
+) -> None:
+    if not guild:
+        return
+
+    setting_key = MODULE_LOG_FIELD_MAP.get(module.lower())
+    if not setting_key:
+        return
+
+    try:
+        import database as db
+
+        settings = await db.get_guild_settings(guild.id)
+        channel_id = settings.get(setting_key)
+        if not channel_id:
+            return
+        channel = guild.get_channel(int(channel_id))
+        if not isinstance(channel, discord.TextChannel):
+            return
+
+        embed = discord.Embed(
+            title=title,
+            description=description,
+            color=color,
+            timestamp=datetime.now(timezone.utc),
+        )
+        if fields:
+            for name, value, inline in fields:
+                embed.add_field(name=name, value=(value or "-")[:1024], inline=inline)
         await channel.send(embed=embed)
     except Exception:
         pass

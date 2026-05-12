@@ -14,7 +14,7 @@ from discord.ext import commands, tasks
 
 import database as db
 from database import client as _mongo_client
-from telemetry import log_exception, send_game_telemetry, send_master_log
+from telemetry import log_exception, send_activity_log, send_game_telemetry, send_master_log
 
 _game_db = _mongo_client["LeaderboardBotDB"]
 keywords_col = _game_db["GameKeywords"]
@@ -22,12 +22,12 @@ tad_col = _game_db["TruthOrDare"]
 quiz_col = _game_db["QuizQuestions"]
 
 APP_LINK = "https://deepdey.vercel.app/"
-INSTA_LINK = "https://instagram.com/deepdey.official"
+INSTA_LINK = "https://deepdey.vercel.app/insta"
 KEYWORD_CACHE_TTL = 300  # seconds between keyword cache refreshes
 RPS_CHOICE_EMOJIS = ("✊", "✋", "✌️")
 PASSWORD = os.getenv("PASSWORD")
-APP_BUTTON_LABEL = "🌐 an app by deep"
-INSTA_BUTTON_LABEL = "📸 Instagram"
+APP_BUTTON_LABEL = "Deep Dey"
+INSTA_BUTTON_LABEL = "Instagram"
 DIRECT_GAME_WIN_POINTS = 15
 DIRECT_GAME_LOSS_POINTS = -10
 AUTO_GAME_WIN_POINTS = 20
@@ -819,6 +819,52 @@ class _SendMessageModal(discord.ui.Modal, title="Send Branded Message"):
             )
 
 
+class _DeleteAutoReplyModal(discord.ui.Modal, title="Delete Auto-Reply Keyword"):
+    password = discord.ui.TextInput(label="Password", required=True, style=discord.TextStyle.short, max_length=200)
+
+    def __init__(self, cog: "GameCommands", trigger: str):
+        super().__init__()
+        self.cog = cog
+        self.trigger = trigger.strip().lower()
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        lock_key = (interaction.user.id, "autoreply_delete")
+        if self.cog._security_failures.get(lock_key, 0) >= 3:
+            await interaction.response.send_message("You are locked out after 3 failed password attempts.", ephemeral=True)
+            return
+
+        if not _password_ok(self.password.value):
+            failures = self.cog._security_failures.get(lock_key, 0) + 1
+            self.cog._security_failures[lock_key] = failures
+            await interaction.response.send_message(
+                f"Invalid password. Attempt {failures}/3.",
+                ephemeral=True,
+            )
+            if failures >= 3:
+                await send_activity_log(
+                    self.cog.bot,
+                    activity_type="Security Lockout",
+                    details="User reached 3 failed attempts for /autoreply delete.",
+                    module="Security",
+                    guild=interaction.guild,
+                    user=interaction.user,
+                )
+            return
+
+        self.cog._security_failures.pop(lock_key, None)
+        result = await keywords_col.delete_one({"trigger": self.trigger})
+        if result.deleted_count:
+            await interaction.response.send_message(
+                f"Auto-reply trigger `{self.trigger}` deleted successfully.",
+                ephemeral=True,
+            )
+        else:
+            await interaction.response.send_message(
+                f"No auto-reply trigger found for `{self.trigger}`.",
+                ephemeral=True,
+            )
+
+
 # ── Game Cog ─────────────────────────────────────────────────────────────────
 
 class GameCommands(commands.Cog):
@@ -829,6 +875,7 @@ class GameCommands(commands.Cog):
         self._keyword_cache: dict[str, str] = {}
         self._cache_ts = 0.0
         self._autogame_next_run: dict[int, float] = {}
+        self._security_failures: dict[tuple[int, str], int] = {}
         self._refresh_keyword_cache.start()
         self._autogame_scheduler.start()
 
@@ -1267,6 +1314,7 @@ class GameCommands(commands.Cog):
     game_group = app_commands.Group(name="game", description="Games & fun commands")
     add_group = app_commands.Group(name="add", description="Securely add game content", parent=game_group)
     send_group = app_commands.Group(name="send", description="Send managed game messages", parent=game_group)
+    autoreply_group = app_commands.Group(name="autoreply", description="Manage auto-replies")
 
     # /game help
     @game_group.command(name="help", description="Show all available game commands")
@@ -1342,6 +1390,22 @@ class GameCommands(commands.Cog):
     @app_commands.checks.has_permissions(administrator=True)
     async def game_send_message(self, interaction: discord.Interaction, target_channel: discord.TextChannel):
         await interaction.response.send_modal(_SendMessageModal(self, target_channel))
+
+    @autoreply_group.command(name="delete", description="Delete an auto-reply trigger securely")
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.checks.has_permissions(administrator=True)
+    async def autoreply_delete(self, interaction: discord.Interaction, trigger: str):
+        lock_key = (interaction.user.id, "autoreply_delete")
+        if self._security_failures.get(lock_key, 0) >= 3:
+            await interaction.response.send_message("You are locked out after 3 failed password attempts.", ephemeral=True)
+            return
+        await interaction.response.send_modal(_DeleteAutoReplyModal(self, trigger))
+
+    @autoreply_delete.autocomplete("trigger")
+    async def autoreply_delete_autocomplete(self, interaction: discord.Interaction, current: str):
+        query = {"trigger": {"$regex": current or "", "$options": "i"}}
+        docs = await keywords_col.find(query, {"trigger": 1}).limit(25).to_list(length=25)
+        return [app_commands.Choice(name=str(doc.get("trigger", ""))[:100], value=str(doc.get("trigger", ""))) for doc in docs if doc.get("trigger")]
 
     # /game tad
     @game_group.command(name="tad", description="Get a random Truth or Dare question")

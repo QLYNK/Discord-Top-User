@@ -1,18 +1,25 @@
 ## Summary
 
-Describe what changed and why.
+<!-- Describe the purpose of this PR and the problem it solves. -->
 
-## Type of change
+## What Changed
 
-- [ ] Bug fix
-- [ ] New feature
-- [ ] Refactor
-- [ ] Documentation
-- [ ] Other
+- 
+- 
+
+## Validation
+
+- [ ] `python -m compileall .`
+- [ ] Manual validation completed (commands/routes affected)
+
+## Risk & Rollback
+
+- Risk level: Low / Medium / High
+- Rollback strategy:
 
 ## Checklist
 
-- [ ] I tested this change locally
-- [ ] I updated documentation if needed
-- [ ] I did not include secrets or sensitive data
-- [ ] I kept changes scoped and focused
+- [ ] Scoped changes only (no unrelated refactors)
+- [ ] Documentation updated where needed
+- [ ] No secrets or sensitive data included
+- [ ] Security implications reviewed

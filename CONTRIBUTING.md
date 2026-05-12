@@ -1,37 +1,48 @@
-# Contributing Guide
+# Contributing to Discord-Top-User
 
-Thanks for contributing to Discord Top User Bot.
+Thank you for your interest in improving Discord-Top-User.
 
-## How to Contribute
+## Ground Rules
 
-1. Fork the repository
-2. Create a branch from `main`
-3. Make focused changes
-4. Test locally
-5. Open a pull request
+- Keep PRs scoped and focused.
+- Never commit secrets, private tokens, or personal data.
+- Maintain modular structure and clear naming.
+- Update docs when behavior changes.
 
-## Development Setup
+## Setup
 
 ```bash
 pip install -r requirements.txt
 python main.py
 ```
 
-## Pull Request Rules
+## Development Workflow
 
-- Keep PRs small and focused
-- Add/update docs when behavior changes
-- Do not include secrets
-- Keep existing architecture and coding style
+1. Fork repository and create a feature branch.
+2. Make small, reviewable commits.
+3. Run local validation:
 
-## Commit Style
+```bash
+python -m compileall .
+```
 
-Use clear commit messages, for example:
+4. Open PR with clear summary and test notes.
 
-- `feat: add xyz`
-- `fix: resolve abc`
-- `docs: update deployment guide`
+## Pull Request Requirements
 
-## Bug Reports and Feature Requests
+- Explain *what changed* and *why*.
+- Include impacted modules/cogs.
+- Attach screenshots/logs if UI/dashboard changed.
+- Confirm no secrets were introduced.
 
-Use GitHub issue templates in `.github/ISSUE_TEMPLATE/`.
+## Coding Expectations
+
+- Favor typed, modular, production-safe Python.
+- Use explicit error handling for external I/O paths.
+- Avoid unnecessary refactors in unrelated files.
+
+## Reporting Bugs & Features
+
+Please use:
+- `.github/ISSUE_TEMPLATE/bug_report.yml`
+- `.github/ISSUE_TEMPLATE/feature_request.yml`

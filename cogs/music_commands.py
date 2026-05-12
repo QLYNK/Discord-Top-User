@@ -20,7 +20,8 @@ from audio_manager import (
     upload_to_cdn,
 )
 from database import client as _mongo_client
-from telemetry import log_exception, send_master_log
+import database as db
+from telemetry import log_exception, send_activity_log, send_guild_module_log, send_master_log
 from utils.audio_manager import cleanup_path, convert_to_96k_mp3, extract_from_url
 
 _music_db = _mongo_client["LeaderboardBotDB"]
@@ -28,7 +29,7 @@ music_col = _music_db["MusicTracks"]
 music_session_col = _music_db["MusicSessions"]
 
 APP_LINK = "https://deepdey.vercel.app/"
-INSTA_LINK = "https://instagram.com/deepdey.official"
+INSTA_LINK = "https://deepdey.vercel.app/insta"
 DEFAULT_ARTWORK = "https://deydeep-static-files.hf.space/f/ncs"
 PASSWORD = os.getenv("PASSWORD")
 SPACE_PASSWORD = os.getenv("SPACE_PASSWORD")
@@ -43,7 +44,7 @@ def _coerce_track_query(raw_id: str) -> dict:
 
 def _base_view() -> discord.ui.View:
     v = discord.ui.View()
-    v.add_item(discord.ui.Button(label="an app by deep", url=APP_LINK, style=discord.ButtonStyle.link))
+    v.add_item(discord.ui.Button(label="Deep Dey", url=APP_LINK, style=discord.ButtonStyle.link))
     v.add_item(discord.ui.Button(label="Instagram", url=INSTA_LINK, style=discord.ButtonStyle.link))
     return v
 
@@ -79,7 +80,7 @@ class _TwoFourSevenView(discord.ui.View):
     def __init__(self, cog: "MusicCommands") -> None:
         super().__init__(timeout=None)
         self.cog = cog
-        self.add_item(discord.ui.Button(label="an app by deep", url=APP_LINK, style=discord.ButtonStyle.link))
+        self.add_item(discord.ui.Button(label="Deep Dey", url=APP_LINK, style=discord.ButtonStyle.link))
         self.add_item(discord.ui.Button(label="Instagram", url=INSTA_LINK, style=discord.ButtonStyle.link))
 
     @discord.ui.button(label="🟢 24/7 ON", style=discord.ButtonStyle.success, custom_id="music_247_on")
@@ -102,7 +103,7 @@ class _LiveDashboardView(discord.ui.View):
         super().__init__(timeout=None)
         self.cog = cog
         self.guild_id = guild_id
-        self.add_item(discord.ui.Button(label="an app by deep", url=APP_LINK, style=discord.ButtonStyle.link))
+        self.add_item(discord.ui.Button(label="Deep Dey", url=APP_LINK, style=discord.ButtonStyle.link))
         self.add_item(discord.ui.Button(label="Instagram", url=INSTA_LINK, style=discord.ButtonStyle.link))
 
     @discord.ui.button(emoji="⏯️", style=discord.ButtonStyle.primary, custom_id="live_playpause")
@@ -204,6 +205,46 @@ class _MusicAddModal(discord.ui.Modal, title="Add Music Track"):
                 cleanup_path(final_mp3)
 
 
+class _MusicDeleteModal(discord.ui.Modal, title="Delete Music Track"):
+    password = discord.ui.TextInput(label="Password", required=True, style=discord.TextStyle.short, max_length=200)
+
+    def __init__(self, cog: "MusicCommands", track_id: str, track_title: str):
+        super().__init__()
+        self.cog = cog
+        self.track_id = track_id
+        self.track_title = track_title
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        key = (interaction.user.id, "music_delete")
+        if self.cog._security_failures.get(key, 0) >= 3:
+            await interaction.response.send_message("You are locked out after 3 failed password attempts.", ephemeral=True)
+            return
+        if not PASSWORD or not secrets.compare_digest(self.password.value, PASSWORD):
+            failures = self.cog._security_failures.get(key, 0) + 1
+            self.cog._security_failures[key] = failures
+            await interaction.response.send_message(f"Invalid password. Attempt {failures}/3.", ephemeral=True)
+            if failures >= 3:
+                await send_activity_log(
+                    self.cog.bot,
+                    activity_type="Security Lockout",
+                    details="User reached 3 failed attempts for /music delete.",
+                    module="Security",
+                    guild=interaction.guild,
+                    user=interaction.user,
+                )
+            return
+
+        self.cog._security_failures.pop(key, None)
+        result = await music_col.delete_one(_coerce_track_query(self.track_id))
+        if result.deleted_count:
+            await interaction.response.send_message(
+                f"Track deleted successfully: **{self.track_title}**",
+                ephemeral=True,
+            )
+        else:
+            await interaction.response.send_message("Track not found or already deleted.", ephemeral=True)
+
+
 class MusicCommands(commands.Cog):
     music_group = app_commands.Group(name="music", description="Music & Audio Engine 🎵")
 
@@ -212,6 +253,7 @@ class MusicCommands(commands.Cog):
         self._states: dict[int, GuildMusicState] = {}
         self._live_dashboards: dict[int, dict] = {}
         self._restored_once = False
+        self._security_failures: dict[tuple[int, str], int] = {}
         self._cache_monitor.start()
         self._state_sync.start()
 
@@ -227,6 +269,35 @@ class MusicCommands(commands.Cog):
         if guild_id not in self._states:
             self._states[guild_id] = GuildMusicState()
         return self._states[guild_id]
+
+    async def _emit_music_logs(
+        self,
+        *,
+        guild: discord.Guild | None,
+        user: discord.abc.User | None,
+        activity_type: str,
+        details: str,
+        fields: list[tuple[str, str, bool]] | None = None,
+        jump_url: str | None = None,
+    ) -> None:
+        await send_activity_log(
+            self.bot,
+            activity_type=activity_type,
+            details=details,
+            module="Music",
+            guild=guild,
+            user=user,
+            jump_url=jump_url,
+            fields=fields,
+        )
+        await send_guild_module_log(
+            self.bot,
+            guild=guild,
+            module="music",
+            title=f"Music • {activity_type}",
+            description=details,
+            fields=fields,
+        )
 
     @tasks.loop(minutes=5)
     async def _cache_monitor(self) -> None:
@@ -341,6 +412,13 @@ class MusicCommands(commands.Cog):
         embed.set_footer(text="an app by deep")
         await interaction.response.send_message(embed=embed, view=_base_view())
 
+    @music_group.command(name="logs", description="Set the dedicated music logs channel")
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.checks.has_permissions(administrator=True)
+    async def music_logs(self, interaction: discord.Interaction, channel: discord.TextChannel) -> None:
+        await db.update_guild_settings(interaction.guild_id, {"music_logs_channel_id": channel.id})
+        await interaction.response.send_message(f"Music logs channel set to {channel.mention}.")
+
     @music_group.command(name="select", description="Select a saved track and stream it instantly")
     async def music_select(self, interaction: discord.Interaction, search_query: str) -> None:
         if not interaction.user.voice or not interaction.user.voice.channel:
@@ -388,6 +466,21 @@ class MusicCommands(commands.Cog):
     async def music_add(self, interaction: discord.Interaction) -> None:
         await interaction.response.send_modal(_MusicAddModal(self))
 
+    @music_group.command(name="delete", description="Delete a track securely")
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.checks.has_permissions(administrator=True)
+    async def music_delete(self, interaction: discord.Interaction, search_query: str) -> None:
+        key = (interaction.user.id, "music_delete")
+        if self._security_failures.get(key, 0) >= 3:
+            await interaction.response.send_message("You are locked out after 3 failed password attempts.", ephemeral=True)
+            return
+        track = await music_col.find_one(_coerce_track_query(search_query), {"title": 1, "name": 1})
+        if not track:
+            await interaction.response.send_message("No track found for the selected ID.", ephemeral=True)
+            return
+        track_title = str(track.get("title") or track.get("name") or "Untitled Track")
+        await interaction.response.send_modal(_MusicDeleteModal(self, search_query, track_title))
+
     @music_select.autocomplete("search_query")
     async def music_select_autocomplete(self, interaction: discord.Interaction, current: str):
         query = (current or "").strip()
@@ -404,6 +497,10 @@ class MusicCommands(commands.Cog):
             app_commands.Choice(name=(doc.get("title") or doc.get("name") or "Untitled")[:100], value=str(doc["_id"]))
             for doc in docs
         ]
+
+    @music_delete.autocomplete("search_query")
+    async def music_delete_autocomplete(self, interaction: discord.Interaction, current: str):
+        return await self.music_select_autocomplete(interaction, current)
 
     @music_group.command(name="join", description="Join your voice channel")
     async def music_join(self, interaction: discord.Interaction) -> None:
@@ -423,6 +520,14 @@ class MusicCommands(commands.Cog):
         embed = discord.Embed(title="✅ Joined Voice Channel", description=f"Connected to **{channel.name}**.", color=0x1DB954)
         embed.set_footer(text="an app by deep")
         await interaction.response.send_message(embed=embed, view=_base_view())
+        await self._emit_music_logs(
+            guild=interaction.guild,
+            user=interaction.user,
+            activity_type="Voice Channel Join",
+            details=f"Joined voice channel: {channel.name}.",
+            fields=[("Voice Channel", channel.name, True)],
+            jump_url=interaction.channel.jump_url if isinstance(interaction.channel, discord.TextChannel) else None,
+        )
 
     @music_group.command(name="leave", description="Leave VC and clear the queue")
     async def music_leave(self, interaction: discord.Interaction) -> None:
@@ -548,6 +653,14 @@ class MusicCommands(commands.Cog):
                     state.start_time = time.time()
                     state.resume_offset = 0
                     await self.persist_state(guild_id)
+                    guild = self.bot.get_guild(guild_id)
+                    await self._emit_music_logs(
+                        guild=guild,
+                        user=self.bot.user,
+                        activity_type="Track Played",
+                        details=f"Track started: {track.get('title', 'Untitled Track')}.",
+                        fields=[("Track", track.get("title", "Untitled Track"), False)],
+                    )
                 except Exception as exc:
                     print(f"[Music] Playback error for {track.get('title', 'unknown')}: {type(exc).__name__}")
                     await asyncio.sleep(1)

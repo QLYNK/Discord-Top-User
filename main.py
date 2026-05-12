@@ -1,3 +1,4 @@
+import asyncio
 import discord
 from discord.ext import commands, tasks
 import os
@@ -10,7 +11,8 @@ from dotenv import load_dotenv
 import database as db
 import utils
 import keep_alive
-from telemetry import log_exception, send_master_log
+from telemetry import log_exception, send_activity_log
+from utils.branding_view import create_branding_view, install_global_branding_enforcer
 
 # Load environment variables
 load_dotenv()
@@ -21,6 +23,8 @@ intents = discord.Intents.default()
 intents.message_content = True
 intents.members = True
 bot = commands.Bot(command_prefix="!", intents=intents, help_command=None)
+install_global_branding_enforcer()
+keep_alive.register_bot(bot)
 
 # Store start time for uptime tracking
 # Store start time for uptime tracking
@@ -29,12 +33,47 @@ bot.start_time = datetime.now()
 # RAM Buffer (6k members ke liye memory store)
 message_buffer = {}
 
+
+def _dashboard_telemetry_bridge(payload: dict):
+    async def _send():
+        await send_activity_log(
+            bot,
+            activity_type=payload.get("activity_type", "Dashboard Activity"),
+            details=payload.get("details", "Dashboard event recorded."),
+            module=payload.get("module", "Web Dashboard"),
+            guild=None,
+            user=None,
+            jump_url=payload.get("path"),
+            fields=[
+                ("Endpoint", str(payload.get("path", "Unknown")), True),
+                ("Method", str(payload.get("method", "Unknown")), True),
+                ("Source IP", str(payload.get("ip", "Unknown")), True),
+                *list(payload.get("fields", [])),
+            ],
+        )
+
+    try:
+        if bot.loop and bot.loop.is_running():
+            asyncio.run_coroutine_threadsafe(_send(), bot.loop)
+    except Exception:
+        pass
+
+
+keep_alive.register_telemetry_handler(_dashboard_telemetry_bridge)
+
 @bot.event
 async def on_ready():
     print(f"✅ Logged in as {bot.user} | Ready to track!")
     
     # Load Cogs (Setup Commands + Music Engine + Game Engine)
-    for extension in ("cogs.setup_commands", "cogs.music_commands", "cogs.game_commands", "cogs.utility_commands"):
+    for extension in (
+        "cogs.setup_commands",
+        "cogs.music_commands",
+        "cogs.game_commands",
+        "cogs.utility_commands",
+        "cogs.productivity_commands",
+        "cogs.proxy",
+    ):
         try:
             await bot.load_extension(extension)
             print(f"✅ Loaded extension: {extension}")
@@ -57,29 +96,16 @@ async def on_ready():
 @bot.event
 async def on_app_command_completion(interaction: discord.Interaction, command):
     qualified_name = command.qualified_name.lower()
-    user_ref = f"{interaction.user} ({interaction.user.id})"
-    location = f"Guild {interaction.guild_id} • Channel {interaction.channel_id}"
-
-    if qualified_name in {"now", "weather", "links", "pomodoro"}:
-        await send_master_log(
-            bot,
-            "Utility Command Used",
-            f"`/{qualified_name}` used by {user_ref}.",
-            fields=[("Location", location, False)],
-        )
-
-    if (
-        qualified_name.startswith("setup")
-        or qualified_name.startswith("game add")
-        or qualified_name.startswith("game send message")
-        or qualified_name.startswith("music add")
-    ):
-        await send_master_log(
-            bot,
-            "Admin Action Executed",
-            f"`/{qualified_name}` executed by {user_ref}.",
-            fields=[("Location", location, False)],
-        )
+    await send_activity_log(
+        bot,
+        activity_type="Command Usage",
+        details=f"Slash command `/{qualified_name}` executed.",
+        module="Commands",
+        guild=interaction.guild,
+        user=interaction.user,
+        jump_url=interaction.channel.jump_url if isinstance(interaction.channel, discord.TextChannel) else None,
+        fields=[("Command", f"/{qualified_name}", True)],
+    )
 
 
 @bot.event
@@ -87,14 +113,14 @@ async def on_voice_state_update(member: discord.Member, before: discord.VoiceSta
     if member.bot:
         return
     if before.channel is None and after.channel is not None:
-        await send_master_log(
+        await send_activity_log(
             bot,
-            "Voice Channel Join",
-            f"{member.mention} joined voice channel **{after.channel.name}**.",
-            fields=[
-                ("Guild", member.guild.name, True),
-                ("User ID", str(member.id), True),
-            ],
+            activity_type="Voice Channel Join",
+            details=f"User joined voice channel {after.channel.name}.",
+            module="Voice",
+            guild=member.guild,
+            user=member,
+            fields=[("Voice Channel", after.channel.name, True)],
         )
 
 @bot.event
@@ -257,9 +283,7 @@ async def process_leaderboard(guild: discord.Guild, settings: dict):
     embed.set_footer(text="an app by deep", icon_url=bot.user.avatar.url if bot.user.avatar else None)
 
     # 5. Buttons (Action Row)
-    view = discord.ui.View()
-    view.add_item(discord.ui.Button(label="Follow owner", url="https://instagram.com/deepdey.official", style=discord.ButtonStyle.link))
-    view.add_item(discord.ui.Button(label="Developer Site", url="https://deepdey.vercel.app/", style=discord.ButtonStyle.link))
+    view = create_branding_view()
 
     # 6. Final Message bhejna
     role_mention = role.mention if role else "Top Members"
