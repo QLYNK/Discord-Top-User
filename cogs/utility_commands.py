@@ -48,7 +48,11 @@ class PollView(discord.ui.View):
                     await interaction.response.send_message("This poll has ended.", ephemeral=True)
                     return
                 self.votes[interaction.user.id] = choice_index
-                await interaction.response.edit_message(embed=self.build_embed(), view=self)
+                await interaction.response.send_message(
+                    f"✅ Vote registered for **{self.options[choice_index]}**.",
+                    embed=self.build_embed(),
+                    ephemeral=True,
+                )
 
             button.callback = callback
             self.add_item(button)
@@ -112,6 +116,202 @@ class PollView(discord.ui.View):
         if self.message:
             await self.message.edit(content=winner_text, embed=self.build_embed(), view=self)
         return winner_text
+
+
+HELP_CATEGORIES: dict[str, dict[str, object]] = {
+    "music": {
+        "title": "🎵 Music Commands",
+        "items": [
+            "`/music help`",
+            "`/music join`",
+            "`/music leave`",
+            "`/music start`",
+            "`/music select <search_query>`",
+            "`/music pause`",
+            "`/music resume`",
+            "`/music nowplaying`",
+            "`/music live`",
+            "`/music 247`",
+            "`/music temp <link>`",
+        ],
+    },
+    "games": {
+        "title": "🎮 Game Commands",
+        "items": [
+            "`/games help`",
+            "`/games tictactoe`",
+            "`/games rps`",
+            "`/games flip`",
+            "`/games trivia`",
+            "`/games truth_or_dare`",
+        ],
+    },
+    "utilities": {
+        "title": "🛠️ Utility Commands",
+        "items": [
+            "`/help`",
+            "`/server`",
+            "`/links`",
+            "`/stats`",
+            "`/now`",
+            "`/weather <city>`",
+            "`/poll ...`",
+        ],
+    },
+    "setup": {
+        "title": "⚙️ Setup Commands",
+        "items": [
+            "`/setup help`",
+            "`/setup set_announcement`",
+            "`/setup set_logs`",
+            "`/setup set_reward_role`",
+            "`/setup set_cycle`",
+            "`/setup top_count`",
+        ],
+    },
+}
+
+
+class HelpDashboardView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=300)
+
+    @staticmethod
+    def _build_category_embed(category_key: str) -> discord.Embed:
+        data = HELP_CATEGORIES[category_key]
+        embed = discord.Embed(title=str(data["title"]), color=0x5865F2)
+        embed.description = "\n".join(f"• {item}" for item in data["items"]) or "No commands listed."
+        embed.set_footer(text="Use slash commands in this server")
+        return embed
+
+    async def _send_category(self, interaction: discord.Interaction, category_key: str) -> None:
+        await interaction.response.send_message(embed=self._build_category_embed(category_key), ephemeral=True)
+
+    @discord.ui.button(label="Music", style=discord.ButtonStyle.primary, custom_id="help_music")
+    async def music(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        await self._send_category(interaction, "music")
+
+    @discord.ui.button(label="Games", style=discord.ButtonStyle.success, custom_id="help_games")
+    async def games(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        await self._send_category(interaction, "games")
+
+    @discord.ui.button(label="Utilities", style=discord.ButtonStyle.secondary, custom_id="help_utilities")
+    async def utilities(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        await self._send_category(interaction, "utilities")
+
+    @discord.ui.button(label="Setup", style=discord.ButtonStyle.danger, custom_id="help_setup")
+    async def setup(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        await self._send_category(interaction, "setup")
+
+
+class RolePaginationView(discord.ui.View):
+    def __init__(self, guild_id: int, role_id: int, page: int, page_size: int = 20):
+        super().__init__(timeout=300)
+        self.guild_id = guild_id
+        self.role_id = role_id
+        self.page = page
+        self.page_size = page_size
+
+    def _slice_members(self, role: discord.Role) -> tuple[list[discord.Member], int, int]:
+        members = sorted(role.members, key=lambda m: m.display_name.lower())
+        total = len(members)
+        total_pages = max(1, (total + self.page_size - 1) // self.page_size)
+        page = max(0, min(self.page, total_pages - 1))
+        start = page * self.page_size
+        end = start + self.page_size
+        return members[start:end], page, total_pages
+
+    def _embed(self, role: discord.Role, page_members: list[discord.Member], page: int, total_pages: int) -> discord.Embed:
+        embed = discord.Embed(
+            title=f"Members with role: {role.name}",
+            color=role.color.value if role.color and role.color.value else 0x5865F2,
+        )
+        lines = [f"{idx}. {member.mention}" for idx, member in enumerate(page_members, start=page * self.page_size + 1)]
+        embed.description = "\n".join(lines) if lines else "No members."
+        embed.set_footer(text=f"Page {page + 1}/{total_pages} • Showing up to {self.page_size} members per page")
+        return embed
+
+    async def _send_page(self, interaction: discord.Interaction, target_page: int) -> None:
+        guild = interaction.guild if interaction.guild and interaction.guild.id == self.guild_id else None
+        if not guild:
+            await interaction.response.send_message("❌ This interaction is no longer valid.", ephemeral=True)
+            return
+        role = guild.get_role(self.role_id)
+        if not role:
+            await interaction.response.send_message("❌ Role no longer exists.", ephemeral=True)
+            return
+
+        self.page = target_page
+        page_members, page, total_pages = self._slice_members(role)
+        view = RolePaginationView(self.guild_id, self.role_id, page, self.page_size) if total_pages > 1 else None
+        await interaction.response.send_message(embed=self._embed(role, page_members, page, total_pages), view=view, ephemeral=True)
+
+    @discord.ui.button(label="Previous", style=discord.ButtonStyle.secondary, custom_id="role_prev")
+    async def previous(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        await self._send_page(interaction, self.page - 1)
+
+    @discord.ui.button(label="Next", style=discord.ButtonStyle.primary, custom_id="role_next")
+    async def next(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        await self._send_page(interaction, self.page + 1)
+
+
+class RoleInfoSelect(discord.ui.Select):
+    def __init__(self, roles: list[discord.Role]):
+        options = [
+            discord.SelectOption(label=role.name[:100], value=str(role.id), description=f"{len(role.members)} members")
+            for role in roles[:25]
+        ]
+        super().__init__(placeholder="Select a role to inspect", min_values=1, max_values=1, options=options)
+
+    @staticmethod
+    def _permission_summary(role: discord.Role) -> str:
+        perms = [name.replace("_", " ").title() for name, enabled in role.permissions if enabled]
+        return ", ".join(perms[:8]) if perms else "No major permissions."
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        if not interaction.guild:
+            await interaction.response.send_message("❌ This command is server-only.", ephemeral=True)
+            return
+        role = interaction.guild.get_role(int(self.values[0]))
+        if not role:
+            await interaction.response.send_message("❌ Role not found.", ephemeral=True)
+            return
+
+        members = sorted(role.members, key=lambda m: m.display_name.lower())
+        first_page = members[:20]
+        embed = discord.Embed(
+            title=f"Role Details • {role.name}",
+            color=role.color.value if role.color and role.color.value else 0x5865F2,
+        )
+        embed.add_field(name="Role Name", value=role.name, inline=True)
+        embed.add_field(name="Color", value=str(role.color), inline=True)
+        embed.add_field(name="Permissions", value=self._permission_summary(role), inline=False)
+        member_lines = "\n".join(f"{idx}. {m.mention}" for idx, m in enumerate(first_page, start=1)) or "No members."
+        embed.add_field(name=f"Members ({len(members)})", value=member_lines[:1024], inline=False)
+
+        view = RolePaginationView(interaction.guild_id, role.id, page=0) if len(members) > 20 else None
+        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+
+
+class ServerInfoView(discord.ui.View):
+    def __init__(self, guild: discord.Guild):
+        super().__init__(timeout=300)
+        self.guild_id = guild.id
+        selectable_roles = [r for r in sorted(guild.roles, key=lambda role: role.position, reverse=True) if r.name != "@everyone"]
+        if selectable_roles:
+            self.add_item(RoleInfoSelect(selectable_roles[:25]))
+
+    @discord.ui.button(label="Role List", style=discord.ButtonStyle.primary, custom_id="server_role_list")
+    async def role_list(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        if not interaction.guild or interaction.guild.id != self.guild_id:
+            await interaction.response.send_message("❌ This interaction is no longer valid.", ephemeral=True)
+            return
+
+        role_names = [r.name for r in interaction.guild.roles if r.name != "@everyone"]
+        content = ", ".join(role_names) if role_names else "No roles found."
+        if len(content) > 1900:
+            content = content[:1900] + "…"
+        await interaction.response.send_message(f"**Server Roles:**\n{content}", ephemeral=True)
 
 
 class UtilityCommands(commands.Cog):
@@ -179,8 +379,9 @@ class UtilityCommands(commands.Cog):
     @app_commands.default_permissions(administrator=True)
     @app_commands.checks.has_permissions(administrator=True)
     async def utilities_logs(self, interaction: discord.Interaction, channel: discord.TextChannel):
+        await interaction.response.defer(thinking=True)
         await db.update_guild_settings(interaction.guild_id, {"utilities_logs_channel_id": channel.id})
-        await interaction.response.send_message(f"Utilities logs channel set to {channel.mention}.")
+        await interaction.followup.send(f"Utilities logs channel set to {channel.mention}.")
 
     @app_commands.command(name="stats", description="Show server and bot statistics")
     async def stats(self, interaction: discord.Interaction):
@@ -189,6 +390,7 @@ class UtilityCommands(commands.Cog):
             await interaction.response.send_message("This command can only be used in a server.", ephemeral=True)
             return
 
+        await interaction.response.defer(thinking=True)
         owner = guild.owner or (await self.bot.fetch_user(guild.owner_id) if guild.owner_id else None)
         bots = sum(1 for member in guild.members if member.bot)
         online = sum(1 for member in guild.members if member.status != discord.Status.offline)
@@ -219,7 +421,7 @@ class UtilityCommands(commands.Cog):
         embed.add_field(name="API Latency", value=f"{round(self.bot.latency * 1000)} ms", inline=True)
         embed.set_footer(text="Professional utility dashboard")
 
-        await interaction.response.send_message(embed=embed, view=self._stats_links_view())
+        await interaction.followup.send(embed=embed, view=self._stats_links_view())
         await self._emit_utility_logs(interaction, activity_type="Stats Command", details="Server and bot stats requested.")
 
     @app_commands.command(name="now", description="Show current Indian Standard Time and bot uptime")
@@ -249,7 +451,7 @@ class UtilityCommands(commands.Cog):
 
     @app_commands.command(name="weather", description="Get current weather for top location matches")
     async def weather(self, interaction: discord.Interaction, city: str):
-        await interaction.response.defer()
+        await interaction.response.defer(thinking=True)
         geo_url = f"https://geocoding-api.open-meteo.com/v1/search?name={quote(city)}"
         timeout = aiohttp.ClientTimeout(total=20)
 
@@ -342,16 +544,60 @@ class UtilityCommands(commands.Cog):
     @app_commands.command(name="links", description="Show official portfolio and project links")
     async def links(self, interaction: discord.Interaction):
         embed = discord.Embed(
-            title="🔗 Creator Portfolio and Project Hub",
-            description="Official links, resources, and projects.",
+            title="🌐 DeepDey Digital Ecosystem",
+            description="Explore the full network: portfolio, community, code, and live products.",
             color=0x5865F2,
         )
-        embed.add_field(name="Core Links", value="Portfolio, Home Server, GitHub, and Music.", inline=False)
-        embed.add_field(name="Project Links", value="QuickLink, StudyBot, Transparent Clock, and Node Server.", inline=False)
-        embed.set_footer(text="Professional utility links dashboard")
+        embed.add_field(name="Core", value="Portfolio • Home Server • GitHub • Instagram", inline=False)
+        embed.add_field(name="Projects", value="Music • QuickLink • StudyBot • Clock Overlay • QLYNK Node", inline=False)
+        embed.set_footer(text="Built with precision by DeepDey")
 
         await interaction.response.send_message(embed=embed, view=self._links_view())
         await self._emit_utility_logs(interaction, activity_type="Links Command", details="Requested official links dashboard.")
+
+    @app_commands.command(name="help", description="Open the interactive command dashboard")
+    async def help_dashboard(self, interaction: discord.Interaction):
+        embed = discord.Embed(
+            title="🧭 Command Dashboard",
+            description=(
+                "**Categories**\n"
+                "• Music\n"
+                "• Games\n"
+                "• Utilities\n"
+                "• Setup\n\n"
+                "Use the buttons below to open a category guide."
+            ),
+            color=0x5865F2,
+        )
+        embed.set_footer(text="Each button sends a new category guide message")
+        await interaction.response.send_message(embed=embed, view=HelpDashboardView())
+        await self._emit_utility_logs(interaction, activity_type="Help Dashboard", details="Opened interactive help dashboard.")
+
+    @app_commands.command(name="server", description="Show the ultimate server information hub")
+    async def server(self, interaction: discord.Interaction):
+        guild = interaction.guild
+        if not guild:
+            await interaction.response.send_message("This command can only be used in a server.", ephemeral=True)
+            return
+
+        online = sum(1 for member in guild.members if member.status != discord.Status.offline)
+        bots = sum(1 for member in guild.members if member.bot)
+        embed = discord.Embed(
+            title="🏛️ Server Information Hub",
+            description=guild.description or "No server description set.",
+            color=0x5865F2,
+        )
+        if guild.icon:
+            embed.set_thumbnail(url=guild.icon.url)
+        embed.add_field(name="Server Name", value=guild.name, inline=True)
+        embed.add_field(name="Total Members", value=str(guild.member_count or 0), inline=True)
+        embed.add_field(name="Online Members", value=str(online), inline=True)
+        embed.add_field(name="Bot Count", value=str(bots), inline=True)
+        if self.bot.user:
+            embed.add_field(name="Bot Information", value=f"{self.bot.user.mention}\nID: `{self.bot.user.id}`", inline=False)
+        embed.set_footer(text="Use Role List + Role Selector for deeper role insights")
+        await interaction.response.send_message(embed=embed, view=ServerInfoView(guild))
+        await self._emit_utility_logs(interaction, activity_type="Server Hub", details="Opened server information hub.")
 
     @app_commands.command(name="poll", description="Create an interactive poll with up to 5 options")
     async def poll(

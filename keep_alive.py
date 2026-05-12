@@ -10,11 +10,11 @@ from pathlib import Path
 from threading import Thread
 from typing import Any
 
-import requests
 from bson import ObjectId
 from flask import Flask, jsonify, redirect, render_template_string, request, session
 from flask_cors import CORS
 from pymongo import MongoClient
+from werkzeug.exceptions import HTTPException
 
 from utils.audio_manager import (
     DEFAULT_ARTWORK,
@@ -32,7 +32,6 @@ CORS(app)
 MONGO_URI = os.getenv("MONGO_URI")
 PASSWORD = os.getenv("PASSWORD")
 SPACE_PASSWORD = os.getenv("SPACE_PASSWORD")
-RENDER_PUBLIC_URL = "https://deepdey.onrender.com"
 
 sync_mongo_client = MongoClient(MONGO_URI, connect=True, serverSelectionTimeoutMS=5000) if MONGO_URI else None
 music_col = sync_mongo_client["LeaderboardBotDB"]["MusicTracks"] if sync_mongo_client else None
@@ -215,6 +214,25 @@ def _api_json_guard(func):
             return jsonify({"error": "Internal server error"}), 500
 
     return wrapper
+
+
+@app.errorhandler(Exception)
+def _global_exception_guard(exc):
+    if request.path.startswith("/api/"):
+        app.logger.exception("Unhandled API exception: %s", exc)
+        _emit_dashboard_telemetry(
+            "API Error",
+            "Unhandled API exception intercepted by global guard.",
+            fields=[
+                ("Endpoint", request.path, True),
+                ("Method", request.method, True),
+                ("Error", type(exc).__name__, False),
+            ],
+        )
+        return jsonify({"error": "Internal server error"}), 500
+    if isinstance(exc, HTTPException):
+        return exc
+    return "Internal server error", 500
 
 
 @app.route("/")
@@ -677,17 +695,6 @@ def delete_quiz(quiz_id: str):
     return jsonify({"ok": True})
 
 
-def crypto_self_ping():
-    while True:
-        sleep_seconds = 300 + secrets.randbelow(301)
-        time.sleep(sleep_seconds)
-        try:
-            requests.get(RENDER_PUBLIC_URL, timeout=20)
-            print(f"🔄 Crypto-ping successful (Waited {sleep_seconds}s)")
-        except Exception as e:
-            print(f"⚠️ Crypto-ping failed: {e}")
-
-
 def guild_cache_refresh_loop():
     while True:
         try:
@@ -700,8 +707,6 @@ def guild_cache_refresh_loop():
 def keep_alive():
     t = Thread(target=run, daemon=True)
     t.start()
-    ping_thread = Thread(target=crypto_self_ping, daemon=True)
-    ping_thread.start()
     guild_cache_thread = Thread(target=guild_cache_refresh_loop, daemon=True)
     guild_cache_thread.start()
 

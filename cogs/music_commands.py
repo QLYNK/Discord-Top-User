@@ -26,7 +26,7 @@ from utils.audio_manager import cleanup_path, convert_to_96k_mp3, extract_from_u
 
 _music_db = _mongo_client["LeaderboardBotDB"]
 music_col = _music_db["MusicTracks"]
-music_session_col = _music_db["MusicSessions"]
+music_states_col = _music_db["music_states"]
 
 APP_LINK = "https://deepdey.vercel.app/"
 INSTA_LINK = "https://deepdey.vercel.app/insta"
@@ -55,6 +55,7 @@ class GuildMusicState:
         "current",
         "voice_client",
         "channel_id",
+        "text_channel_id",
         "is_247",
         "paused",
         "start_time",
@@ -68,6 +69,7 @@ class GuildMusicState:
         self.current: dict | None = None
         self.voice_client: discord.VoiceClient | None = None
         self.channel_id: int | None = None
+        self.text_channel_id: int | None = None
         self.is_247: bool = False
         self.paused: bool = False
         self.start_time: float | None = None
@@ -87,6 +89,7 @@ class _TwoFourSevenView(discord.ui.View):
     async def enable_247(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
         state = self.cog.get_state(interaction.guild_id)
         state.is_247 = True
+        state.text_channel_id = interaction.channel_id
         await self.cog.persist_state(interaction.guild_id)
         await interaction.response.send_message("✅ 24/7 mode enabled.", ephemeral=True)
 
@@ -94,6 +97,7 @@ class _TwoFourSevenView(discord.ui.View):
     async def disable_247(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
         state = self.cog.get_state(interaction.guild_id)
         state.is_247 = False
+        state.text_channel_id = interaction.channel_id
         await self.cog.persist_state(interaction.guild_id)
         await interaction.response.send_message("✅ 24/7 mode disabled.", ephemeral=True)
 
@@ -133,7 +137,10 @@ class _LiveDashboardView(discord.ui.View):
         state = self.cog.get_state(self.guild_id)
         if state.voice_client and (state.voice_client.is_playing() or state.voice_client.is_paused()):
             state.voice_client.stop()
-        await interaction.response.defer()
+            await self.cog.persist_state(self.guild_id)
+            await interaction.response.send_message("⏭️ Skipped current track.", ephemeral=True)
+            return
+        await interaction.response.send_message("❌ Nothing is playing.", ephemeral=True)
 
 
 class _MusicAddModal(discord.ui.Modal, title="Add Music Track"):
@@ -322,20 +329,21 @@ class MusicCommands(commands.Cog):
 
         payload = {
             "guild_id": guild_id,
-            "voice_channel_id": state.channel_id,
-            "is_247": state.is_247,
+            "vc_channel_id": state.channel_id,
+            "text_channel_id": state.text_channel_id,
+            "is_24_7": state.is_247,
             "queue": state.queue,
-            "current": state.current,
+            "current_track": state.current,
             "resume_offset": elapsed,
             "updated_at": datetime.now(timezone.utc),
-            "active": bool(state.channel_id and (state.current or state.queue)),
+            "active": bool(state.channel_id and (state.current or state.queue or state.is_247)),
         }
-        await music_session_col.update_one({"guild_id": guild_id}, {"$set": payload}, upsert=True)
+        await music_states_col.update_one({"guild_id": guild_id}, {"$set": payload}, upsert=True)
 
     async def restore_sessions(self) -> None:
-        async for doc in music_session_col.find({"active": True}):
+        async for doc in music_states_col.find({"$or": [{"active": True}, {"is_24_7": True}]}):
             guild_id = doc.get("guild_id")
-            channel_id = doc.get("voice_channel_id")
+            channel_id = doc.get("vc_channel_id")
             if not guild_id or not channel_id:
                 continue
 
@@ -347,12 +355,13 @@ class MusicCommands(commands.Cog):
                 continue
 
             state = self.get_state(guild_id)
-            state.is_247 = bool(doc.get("is_247", False))
+            state.is_247 = bool(doc.get("is_24_7", False))
             state.queue = list(doc.get("queue", []))
-            state.current = doc.get("current")
-            state.next_track = doc.get("current")
+            state.current = doc.get("current_track")
+            state.next_track = doc.get("current_track")
             state.resume_offset = int(doc.get("resume_offset", 0))
             state.channel_id = channel_id
+            state.text_channel_id = doc.get("text_channel_id")
 
             try:
                 state.voice_client = await channel.connect(reconnect=True)
@@ -416,8 +425,9 @@ class MusicCommands(commands.Cog):
     @app_commands.default_permissions(administrator=True)
     @app_commands.checks.has_permissions(administrator=True)
     async def music_logs(self, interaction: discord.Interaction, channel: discord.TextChannel) -> None:
+        await interaction.response.defer(thinking=True)
         await db.update_guild_settings(interaction.guild_id, {"music_logs_channel_id": channel.id})
-        await interaction.response.send_message(f"Music logs channel set to {channel.mention}.")
+        await interaction.followup.send(f"Music logs channel set to {channel.mention}.")
 
     @music_group.command(name="select", description="Select a saved track and stream it instantly")
     async def music_select(self, interaction: discord.Interaction, search_query: str) -> None:
@@ -425,9 +435,10 @@ class MusicCommands(commands.Cog):
             await interaction.response.send_message("❌ Join a voice channel first.", ephemeral=True)
             return
 
+        await interaction.response.defer(thinking=True)
         track_doc = await music_col.find_one(_coerce_track_query(search_query))
         if not track_doc:
-            await interaction.response.send_message("❌ Track not found.", ephemeral=True)
+            await interaction.followup.send("❌ Track not found.", ephemeral=True)
             return
 
         track = {
@@ -436,7 +447,7 @@ class MusicCommands(commands.Cog):
             "artwork_url": track_doc.get("artwork_url") or DEFAULT_ARTWORK,
         }
         if not track["file_url"]:
-            await interaction.response.send_message("❌ Track URL missing in database.", ephemeral=True)
+            await interaction.followup.send("❌ Track URL missing in database.", ephemeral=True)
             return
 
         state = self.get_state(interaction.guild_id)
@@ -446,6 +457,7 @@ class MusicCommands(commands.Cog):
         else:
             state.voice_client = await channel.connect()
         state.channel_id = channel.id
+        state.text_channel_id = interaction.channel_id
 
         state.queue.append(track)
         state.next_track = track
@@ -458,7 +470,7 @@ class MusicCommands(commands.Cog):
         await self.persist_state(interaction.guild_id)
         embed = discord.Embed(title="▶️ Streaming Selected Track", description=f"Queued: **{track['title']}**", color=0x1DB954)
         embed.set_footer(text="an app by deep")
-        await interaction.response.send_message(embed=embed, view=_base_view())
+        await interaction.followup.send(embed=embed, view=_base_view())
 
     @music_group.command(name="add", description="Add a track using secure modal upload flow")
     @app_commands.default_permissions(administrator=True)
@@ -508,6 +520,7 @@ class MusicCommands(commands.Cog):
             await interaction.response.send_message("❌ You must be in a voice channel first.", ephemeral=True)
             return
 
+        await interaction.response.defer(thinking=True)
         channel = interaction.user.voice.channel
         state = self.get_state(interaction.guild_id)
         if state.voice_client and state.voice_client.is_connected():
@@ -515,11 +528,12 @@ class MusicCommands(commands.Cog):
         else:
             state.voice_client = await channel.connect()
         state.channel_id = channel.id
+        state.text_channel_id = interaction.channel_id
         await self.persist_state(interaction.guild_id)
 
         embed = discord.Embed(title="✅ Joined Voice Channel", description=f"Connected to **{channel.name}**.", color=0x1DB954)
         embed.set_footer(text="an app by deep")
-        await interaction.response.send_message(embed=embed, view=_base_view())
+        await interaction.followup.send(embed=embed, view=_base_view())
         await self._emit_music_logs(
             guild=interaction.guild,
             user=interaction.user,
@@ -531,6 +545,7 @@ class MusicCommands(commands.Cog):
 
     @music_group.command(name="leave", description="Leave VC and clear the queue")
     async def music_leave(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer(thinking=True)
         state = self.get_state(interaction.guild_id)
         if state._playback_task and not state._playback_task.done():
             state._playback_task.cancel()
@@ -541,14 +556,16 @@ class MusicCommands(commands.Cog):
         state.queue.clear()
         state.current = None
         state.channel_id = None
-        await music_session_col.update_one({"guild_id": interaction.guild_id}, {"$set": {"active": False}})
+        state.text_channel_id = interaction.channel_id
+        await music_states_col.update_one({"guild_id": interaction.guild_id}, {"$set": {"active": False}}, upsert=True)
 
         embed = discord.Embed(title="👋 Left Voice Channel", description="Disconnected and queue cleared.", color=0xFF4444)
         embed.set_footer(text="an app by deep")
-        await interaction.response.send_message(embed=embed, view=_base_view())
+        await interaction.followup.send(embed=embed, view=_base_view())
 
     @music_group.command(name="pause", description="Pause playback")
     async def music_pause(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer(thinking=True)
         state = self.get_state(interaction.guild_id)
         vc = state.voice_client
         if vc and vc.is_playing():
@@ -558,12 +575,13 @@ class MusicCommands(commands.Cog):
             await self.persist_state(interaction.guild_id)
             embed = discord.Embed(title="⏸️ Paused", color=0xFFA500)
             embed.set_footer(text="an app by deep")
-            await interaction.response.send_message(embed=embed, view=_base_view())
+            await interaction.followup.send(embed=embed, view=_base_view())
         else:
-            await interaction.response.send_message("❌ Nothing is playing.", ephemeral=True)
+            await interaction.followup.send("❌ Nothing is playing.", ephemeral=True)
 
     @music_group.command(name="resume", description="Resume playback")
     async def music_resume(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer(thinking=True)
         state = self.get_state(interaction.guild_id)
         vc = state.voice_client
         if vc and vc.is_paused():
@@ -574,9 +592,9 @@ class MusicCommands(commands.Cog):
             await self.persist_state(interaction.guild_id)
             embed = discord.Embed(title="▶️ Resumed", color=0x1DB954)
             embed.set_footer(text="an app by deep")
-            await interaction.response.send_message(embed=embed, view=_base_view())
+            await interaction.followup.send(embed=embed, view=_base_view())
         else:
-            await interaction.response.send_message("❌ Nothing is paused.", ephemeral=True)
+            await interaction.followup.send("❌ Nothing is paused.", ephemeral=True)
 
     @music_group.command(name="start", description="Start playing the saved queue")
     async def music_start(self, interaction: discord.Interaction) -> None:
@@ -585,6 +603,7 @@ class MusicCommands(commands.Cog):
             await interaction.response.send_message("❌ Use `/music join` first.", ephemeral=True)
             return
 
+        await interaction.response.defer(thinking=True)
         tracks = await music_col.find({}, {"title": 1, "name": 1, "file_url": 1, "url": 1, "artwork_url": 1}).to_list(length=None)
         queue = []
         for t in tracks:
@@ -600,10 +619,11 @@ class MusicCommands(commands.Cog):
             )
 
         if not queue:
-            await interaction.response.send_message("❌ No playable tracks found in DB.", ephemeral=True)
+            await interaction.followup.send("❌ No playable tracks found in DB.", ephemeral=True)
             return
 
         state.queue = queue
+        state.text_channel_id = interaction.channel_id
         if state._playback_task and not state._playback_task.done():
             state._playback_task.cancel()
         state._playback_task = asyncio.create_task(self._playback_loop(interaction.guild_id))
@@ -611,7 +631,7 @@ class MusicCommands(commands.Cog):
 
         embed = discord.Embed(title="▶️ Starting Queue", description=f"Loaded **{len(state.queue)}** tracks.", color=0x1DB954)
         embed.set_footer(text="an app by deep")
-        await interaction.response.send_message(embed=embed, view=_base_view())
+        await interaction.followup.send(embed=embed, view=_base_view())
 
     async def _playback_loop(self, guild_id: int) -> None:
         state = self.get_state(guild_id)
@@ -693,7 +713,7 @@ class MusicCommands(commands.Cog):
             await interaction.response.send_message("❌ Use `/music join` first.", ephemeral=True)
             return
 
-        await interaction.response.defer()
+        await interaction.response.defer(thinking=True)
         mp3_path = await download_and_convert(link)
         if not mp3_path:
             await interaction.followup.send("❌ Failed to process the temporary track.", ephemeral=True)

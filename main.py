@@ -4,14 +4,16 @@ from discord.ext import commands, tasks
 import os
 import sys
 import json # Imports me add kar lena
+import secrets
 from datetime import datetime, timedelta
+import aiohttp
 from dotenv import load_dotenv
 
 # Helpers & Database import
 import database as db
 import utils
 import keep_alive
-from telemetry import log_exception, send_activity_log
+from telemetry import log_exception, send_activity_log, send_master_log
 from utils.branding_view import create_branding_view, install_global_branding_enforcer
 
 # Load environment variables
@@ -60,6 +62,7 @@ def _dashboard_telemetry_bridge(payload: dict):
 
 
 keep_alive.register_telemetry_handler(_dashboard_telemetry_bridge)
+KEEPALIVE_URL = "https://deepdey.onrender.com/"
 
 @bot.event
 async def on_ready():
@@ -92,6 +95,8 @@ async def on_ready():
         update_api_stats.start()
     if not flush_buffer.is_running():
         flush_buffer.start()
+    if not crypto_keepalive.is_running():
+        crypto_keepalive.start()
 
 @bot.event
 async def on_app_command_completion(interaction: discord.Interaction, command):
@@ -175,6 +180,36 @@ async def update_api_stats():
     }
     with open('stats.json', 'w') as f:
         json.dump(stats_data, f)
+
+
+@tasks.loop(seconds=300)
+async def crypto_keepalive():
+    interval = secrets.choice(range(300, 601))
+    crypto_keepalive.change_interval(seconds=interval)
+
+    try:
+        timeout = aiohttp.ClientTimeout(total=20)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.get(KEEPALIVE_URL) as response:
+                if 200 <= response.status < 400:
+                    await send_master_log(
+                        bot,
+                        title="Crypto Keep-Alive Ping",
+                        description="Successful self-ping to keep Render host awake.",
+                        fields=[
+                            ("Target", KEEPALIVE_URL, False),
+                            ("HTTP Status", str(response.status), True),
+                            ("Sleep Interval", f"{interval}s", True),
+                        ],
+                    )
+    except Exception:
+        pass
+
+
+@crypto_keepalive.before_loop
+async def before_crypto_keepalive():
+    await bot.wait_until_ready()
+    crypto_keepalive.change_interval(seconds=secrets.choice(range(300, 601)))
 
 @tasks.loop(minutes=2) # Har 2 minute me RAM se DB me bhejega
 async def flush_buffer():

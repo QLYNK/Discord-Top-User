@@ -87,27 +87,33 @@ class SetupCommands(commands.Cog):
         )
 
     @setup_group.command(name="autogame", description="Configure automated game drops")
-    @app_commands.describe(channel="Target channel for auto-games", role="Role to ping for auto-games", interval_in_minutes="Event interval in minutes")
+    @app_commands.describe(
+        channel="Target channel for auto-games",
+        ping_role="Role to ping for auto-games (leave empty for silent drop)",
+        interval_in_minutes="Event interval in minutes",
+    )
     async def setup_autogame(
         self,
         interaction: discord.Interaction,
         channel: discord.TextChannel,
-        role: discord.Role,
         interval_in_minutes: app_commands.Range[int, 1, 1440],
+        ping_role: discord.Role | None = None,
     ):
+        await interaction.response.defer(thinking=True)
         await db.update_guild_settings(
             interaction.guild_id,
             {
                 "autogame_channel_id": channel.id,
-                "autogame_role_id": role.id,
+                "autogame_role_id": ping_role.id if ping_role else None,
                 "autogame_interval_minutes": int(interval_in_minutes),
             },
         )
-        await interaction.response.send_message(
+        role_line = f"Role: {ping_role.mention}\n" if ping_role else "Role: *(no ping — silent drop)*\n"
+        await interaction.followup.send(
             (
                 "✅ Auto-game scheduler updated.\n"
                 f"Channel: {channel.mention}\n"
-                f"Role: {role.mention}\n"
+                f"{role_line}"
                 f"Interval: **{interval_in_minutes} minute(s)**"
             ),
             view=self._branding_view(),
