@@ -2,8 +2,10 @@
 
 import asyncio
 import os
+import re
 import secrets
 import time
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 import discord
@@ -32,6 +34,28 @@ AUTO_GAME_WIN_POINTS = 20
 AUTO_GAME_LOSS_POINTS = -5
 TOSS_WIN_POINTS = 10
 TOSS_LOSS_POINTS = -10
+HANGMAN_FALLBACK_WORDS = (
+    "python",
+    "discord",
+    "mongodb",
+    "telemetry",
+    "scheduler",
+    "economy",
+    "interaction",
+    "challenge",
+)
+EIGHT_BALL_RESPONSES = (
+    "It is certain.",
+    "Without a doubt.",
+    "Most likely.",
+    "Yes — definitely.",
+    "Ask again later.",
+    "Cannot predict now.",
+    "Concentrate and ask again.",
+    "Don't count on it.",
+    "Very doubtful.",
+    "My reply is no.",
+)
 
 # ── Branding view ────────────────────────────────────────────────────────────
 
@@ -50,6 +74,15 @@ def _format_points(delta: int | None) -> str:
 
 def _member_delta(member: discord.abc.User, delta: int) -> str:
     return _format_points(None if getattr(member, "bot", False) else delta)
+
+
+def _relative_ts(seconds_from_now: int) -> int:
+    return int(datetime.now(timezone.utc).timestamp()) + max(1, seconds_from_now)
+
+
+def _extract_candidate_words(text: str, *, min_len: int = 6) -> list[str]:
+    tokens = re.findall(r"[A-Za-z]{%d,}" % min_len, text.lower())
+    return [token for token in tokens if token.isalpha()]
 
 
 def _scramble_text(value: str) -> str:
@@ -388,6 +421,139 @@ class TTTView(discord.ui.View):
         self.stop()
 
 
+# ── Memory Game View ──────────────────────────────────────────────────────────
+
+class MemoryButton(discord.ui.Button):
+    def __init__(self, index: int, row: int):
+        super().__init__(label="❓", style=discord.ButtonStyle.secondary, row=row)
+        self.index = index
+
+    async def callback(self, interaction: discord.Interaction):
+        view: MemoryView = self.view  # type: ignore
+        await view.handle_click(interaction, self)
+
+
+class MemoryView(discord.ui.View):
+    def __init__(self, cog: "GameCommands", player: discord.Member, *, rows: int, cols: int, countdown_ts: int):
+        super().__init__(timeout=120)
+        self.cog = cog
+        self.player = player
+        self.rows = rows
+        self.cols = cols
+        self.countdown_ts = countdown_ts
+        self.total_cells = rows * cols
+        pair_count = self.total_cells // 2
+        emoji_pool = ["🍎", "🍉", "🍇", "🍌", "🍒", "🥝", "🍋", "🍍", "🥭", "🍑", "🌟", "⚡"]
+        selected = [emoji_pool[i % len(emoji_pool)] for i in range(pair_count)]
+        self.hidden_values = selected + selected
+        for idx in range(len(self.hidden_values) - 1, 0, -1):
+            swap_idx = secrets.randbelow(idx + 1)
+            self.hidden_values[idx], self.hidden_values[swap_idx] = self.hidden_values[swap_idx], self.hidden_values[idx]
+        self.matched: set[int] = set()
+        self.opened: list[int] = []
+        self.locked = False
+        self.moves = 0
+
+        for r in range(rows):
+            for c in range(cols):
+                index = (r * cols) + c
+                self.add_item(MemoryButton(index=index, row=r))
+        self.add_item(discord.ui.Button(label=APP_BUTTON_LABEL, url=APP_LINK, style=discord.ButtonStyle.link, row=4))
+        self.add_item(discord.ui.Button(label=INSTA_BUTTON_LABEL, url=INSTA_LINK, style=discord.ButtonStyle.link, row=4))
+
+    def _button_by_index(self, index: int) -> MemoryButton | None:
+        for item in self.children:
+            if isinstance(item, MemoryButton) and item.index == index:
+                return item
+        return None
+
+    async def handle_click(self, interaction: discord.Interaction, button: MemoryButton):
+        if interaction.user.id != self.player.id:
+            await interaction.response.send_message("⛔ Only the command user can play this board.", ephemeral=True)
+            return
+        if self.locked:
+            await interaction.response.send_message("⏳ Pair is being checked, wait a moment.", ephemeral=True)
+            return
+        if button.index in self.matched or button.index in self.opened:
+            await interaction.response.send_message("✅ This tile is already open.", ephemeral=True)
+            return
+
+        button.label = self.hidden_values[button.index]
+        button.style = discord.ButtonStyle.primary
+        self.opened.append(button.index)
+        await interaction.response.edit_message(view=self)
+
+        if len(self.opened) < 2:
+            return
+
+        self.locked = True
+        self.moves += 1
+        first, second = self.opened
+        if self.hidden_values[first] == self.hidden_values[second]:
+            self.matched.update({first, second})
+            fb = self._button_by_index(first)
+            sb = self._button_by_index(second)
+            if fb:
+                fb.disabled = True
+                fb.style = discord.ButtonStyle.success
+            if sb:
+                sb.disabled = True
+                sb.style = discord.ButtonStyle.success
+            self.opened.clear()
+            self.locked = False
+        else:
+            await asyncio.sleep(1.0)
+            fb = self._button_by_index(first)
+            sb = self._button_by_index(second)
+            if fb:
+                fb.label = "❓"
+                fb.style = discord.ButtonStyle.secondary
+            if sb:
+                sb.label = "❓"
+                sb.style = discord.ButtonStyle.secondary
+            self.opened.clear()
+            self.locked = False
+
+        if len(self.matched) == self.total_cells:
+            for item in self.children:
+                if isinstance(item, MemoryButton):
+                    item.disabled = True
+            self.stop()
+            win_embed = discord.Embed(
+                title="🧠 Memory — Result",
+                description=(
+                    f"🎉 {self.player.mention} completed the board!\n"
+                    f"Moves: **{self.moves}**\n"
+                    f"Finished: <t:{self.countdown_ts}:R>"
+                ),
+                color=0x5865F2,
+            )
+            win_embed.add_field(name="Point Change", value=_format_points(DIRECT_GAME_WIN_POINTS), inline=False)
+            win_embed.set_footer(text="an app by deep")
+            await interaction.message.edit(embed=win_embed, view=_branding_view())
+            asyncio.create_task(
+                self.cog._record_game_outcome(
+                    guild=interaction.guild,
+                    game_name="Memory",
+                    result=f"{self.player.display_name} completed board",
+                    profile_updates=[
+                        {
+                            "member": self.player,
+                            "points": DIRECT_GAME_WIN_POINTS,
+                            "wins": 1,
+                            "losses": 0,
+                            "total_games": 1,
+                        }
+                    ],
+                    players=[(self.player.display_name, self.player.id, _format_points(DIRECT_GAME_WIN_POINTS))],
+                )
+            )
+        else:
+            try:
+                await interaction.message.edit(view=self)
+            except Exception:
+                pass
+
 # ── Quiz View ─────────────────────────────────────────────────────────────────
 
 class QuizView(discord.ui.View):
@@ -662,10 +828,13 @@ class GameCommands(commands.Cog):
         self.bot = bot
         self._keyword_cache: dict[str, str] = {}
         self._cache_ts = 0.0
+        self._autogame_next_run: dict[int, float] = {}
         self._refresh_keyword_cache.start()
+        self._autogame_scheduler.start()
 
     def cog_unload(self):
         self._refresh_keyword_cache.cancel()
+        self._autogame_scheduler.cancel()
 
     async def _load_keyword_cache(self):
         docs = await keywords_col.find({}).to_list(length=None)
@@ -717,6 +886,41 @@ class GameCommands(commands.Cog):
             players=players,
         )
 
+    async def _log_local_game_result(
+        self,
+        *,
+        guild: discord.Guild | None,
+        game_name: str,
+        result: str,
+        players: list[tuple[str, int, str]],
+    ):
+        if not guild:
+            return
+        settings = await db.get_guild_settings(guild.id)
+        channel_id = settings.get("game_logs_channel_id")
+        if not channel_id:
+            return
+        channel = guild.get_channel(channel_id)
+        if not isinstance(channel, discord.TextChannel):
+            return
+
+        people = "\n".join([f"• {name} ({uid})" for name, uid, _ in players]) or "-"
+        points = "\n".join([f"• {name}: {delta}" for name, _, delta in players]) or "-"
+        embed = discord.Embed(
+            title="🎮 Local Game Summary",
+            color=0x5865F2,
+            timestamp=datetime.now(timezone.utc),
+        )
+        embed.add_field(name="Game Type", value=game_name, inline=True)
+        embed.add_field(name="Result", value=result, inline=True)
+        embed.add_field(name="Players", value=people[:1024], inline=False)
+        embed.add_field(name="Points Changed", value=points[:1024], inline=False)
+        embed.set_footer(text="an app by deep")
+        try:
+            await channel.send(embed=embed, view=_branding_view())
+        except Exception:
+            pass
+
     async def _record_game_outcome(
         self,
         *,
@@ -736,6 +940,12 @@ class GameCommands(commands.Cog):
                 context=f"Guild: {guild.id if guild else 'unknown'} | Result: {result}",
             )
         await self._log_game_result(
+            guild=guild,
+            game_name=game_name,
+            result=result,
+            players=players,
+        )
+        await self._log_local_game_result(
             guild=guild,
             game_name=game_name,
             result=result,
@@ -825,6 +1035,186 @@ class GameCommands(commands.Cog):
             )
         )
 
+    async def _pick_scramble_word_from_history(self, channel: discord.TextChannel) -> str:
+        start_of_day = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+        candidates: list[str] = []
+        async for msg in channel.history(limit=300, after=start_of_day):
+            if msg.author.bot:
+                continue
+            candidates.extend(_extract_candidate_words(msg.content, min_len=6))
+        if candidates:
+            return secrets.choice(candidates)
+        return secrets.choice(list(HANGMAN_FALLBACK_WORDS))
+
+    async def _pick_hangman_word(self, interaction: discord.Interaction, min_len: int, max_len: int) -> str:
+        if isinstance(interaction.channel, discord.TextChannel):
+            user_words: list[str] = []
+            async for msg in interaction.channel.history(limit=400):
+                if msg.author.id != interaction.user.id:
+                    continue
+                for token in _extract_candidate_words(msg.content, min_len=min_len):
+                    if min_len <= len(token) <= max_len:
+                        user_words.append(token)
+                if len(user_words) >= 100:
+                    break
+            if user_words:
+                return secrets.choice(user_words)
+
+            server_words: list[str] = []
+            async for msg in interaction.channel.history(limit=600):
+                if msg.author.bot:
+                    continue
+                for token in _extract_candidate_words(msg.content, min_len=min_len):
+                    if min_len <= len(token) <= max_len:
+                        server_words.append(token)
+            if server_words:
+                return secrets.choice(server_words)
+
+        fallback_filtered = [w for w in HANGMAN_FALLBACK_WORDS if min_len <= len(w) <= max_len]
+        if fallback_filtered:
+            return secrets.choice(fallback_filtered)
+        return secrets.choice(list(HANGMAN_FALLBACK_WORDS))
+
+    async def _build_autogame_payload(self, channel: discord.TextChannel) -> tuple[str, str, str]:
+        event_type = secrets.choice(["scramble", "math", "quiz"])
+        if event_type == "scramble":
+            answer = await self._pick_scramble_word_from_history(channel)
+            return (
+                "Word Scramble",
+                f"Unscramble this word: **{_scramble_text(answer)}**",
+                answer,
+            )
+        if event_type == "math":
+            left = secrets.randbelow(41) + 10
+            right = secrets.randbelow(31) + 1
+            operator = secrets.choice(["+", "-", "*"])
+            if operator == "+":
+                value = left + right
+            elif operator == "-":
+                value = left - right
+            else:
+                value = left * right
+            return ("Math Challenge", f"Solve: **{left} {operator} {right} = ?**", str(value))
+
+        docs = await quiz_col.find({}).to_list(length=None)
+        if docs:
+            chosen = secrets.choice(docs)
+            return ("Quiz", str(chosen.get("question") or "What is 2 + 2?"), str(chosen.get("correct_answer") or "4"))
+        return ("Quiz", "Fallback quiz: What is 2 + 2?", "4")
+
+    async def _run_scheduled_autogame(
+        self,
+        *,
+        guild: discord.Guild,
+        channel: discord.TextChannel,
+        role: discord.Role,
+        interval_mins: int,
+    ):
+        game_name, prompt_text, expected_answer = await self._build_autogame_payload(channel)
+        deadline_ts = _relative_ts(60)
+        embed = discord.Embed(
+            title=f"⚡ Auto-Game • {game_name}",
+            description=(
+                f"{prompt_text}\n\n"
+                f"⏳ Ends <t:{deadline_ts}:R>\n"
+                "Reply directly to this bot message with your answer."
+            ),
+            color=0x5865F2,
+        )
+        embed.set_footer(text="an app by deep")
+        game_message = await channel.send(content=role.mention, embed=embed, view=_branding_view())
+
+        updates: list[dict] = []
+        player_changes: list[tuple[str, int, str]] = []
+        penalized_users: set[int] = set()
+        winner: discord.Member | discord.User | None = None
+        winner_response: discord.Message | None = None
+        timeout_seconds = max(1, deadline_ts - int(datetime.now(timezone.utc).timestamp()))
+
+        def _check(message: discord.Message) -> bool:
+            if message.author.bot or message.guild is None:
+                return False
+            if message.guild.id != guild.id or message.channel.id != channel.id:
+                return False
+            if not message.reference or message.reference.message_id != game_message.id:
+                return False
+            return True
+
+        start_ts = time.time()
+        while (time.time() - start_ts) < timeout_seconds:
+            remaining = timeout_seconds - (time.time() - start_ts)
+            if remaining <= 0:
+                break
+            try:
+                reply = await self.bot.wait_for("message", timeout=remaining, check=_check)
+            except asyncio.TimeoutError:
+                break
+
+            answer = reply.content.strip()
+            if secrets.compare_digest(answer.lower(), expected_answer.lower()):
+                winner = reply.author
+                winner_response = reply
+                updates.append(
+                    {
+                        "member": reply.author,
+                        "points": AUTO_GAME_WIN_POINTS,
+                        "wins": 1,
+                        "losses": 0,
+                        "total_games": 1,
+                    }
+                )
+                player_changes.append((reply.author.display_name, reply.author.id, _format_points(AUTO_GAME_WIN_POINTS)))
+                break
+
+            if reply.author.id not in penalized_users:
+                penalized_users.add(reply.author.id)
+                updates.append(
+                    {
+                        "member": reply.author,
+                        "points": AUTO_GAME_LOSS_POINTS,
+                        "wins": 0,
+                        "losses": 1,
+                        "total_games": 1,
+                    }
+                )
+                player_changes.append((reply.author.display_name, reply.author.id, _format_points(AUTO_GAME_LOSS_POINTS)))
+                await channel.send(
+                    f"❌ {reply.author.mention} wrong reply (-5). Keep trying! Ends <t:{deadline_ts}:R>",
+                    view=_branding_view(),
+                )
+
+        next_time = datetime.now(timezone.utc) + timedelta(minutes=interval_mins)
+        if winner:
+            summary = (
+                f"🏆 Winner: {winner.mention}\n"
+                f"Correct reply: {winner_response.content if winner_response else expected_answer}\n"
+                f"Next tentative event: <t:{int(next_time.timestamp())}:R>"
+            )
+            result = f"{winner.display_name} won auto-game"
+        else:
+            summary = (
+                "⏰ No correct reply in time.\n"
+                "No winner this round.\n"
+                f"Next tentative event: <t:{int(next_time.timestamp())}:R>"
+            )
+            result = "No winner (timeout)"
+
+        result_embed = discord.Embed(
+            title=f"📢 Auto-Game Result • {game_name}",
+            description=summary,
+            color=0x5865F2,
+        )
+        result_embed.add_field(name="Correct Answer", value=f"**{expected_answer}**", inline=False)
+        result_embed.set_footer(text="an app by deep")
+        await channel.send(embed=result_embed, view=_branding_view())
+        await self._record_game_outcome(
+            guild=guild,
+            game_name=f"Auto {game_name}",
+            result=result,
+            players=player_changes,
+            profile_updates=updates,
+        )
+
     # ── Keyword cache ────────────────────────────────────────────────────────
 
     @tasks.loop(seconds=KEYWORD_CACHE_TTL)
@@ -838,6 +1228,40 @@ class GameCommands(commands.Cog):
     async def _before_refresh(self):
         await self.bot.wait_until_ready()
 
+    @tasks.loop(seconds=15)
+    async def _autogame_scheduler(self):
+        now = time.time()
+        async for settings in db.settings_col.find({}):
+            guild_id = settings.get("guild_id")
+            channel_id = settings.get("autogame_channel_id")
+            role_id = settings.get("autogame_role_id")
+            interval_mins = int(settings.get("autogame_interval_minutes") or 0)
+            if not guild_id or not channel_id or not role_id or interval_mins <= 0:
+                continue
+
+            next_run = self._autogame_next_run.get(guild_id)
+            if next_run is None:
+                self._autogame_next_run[guild_id] = now + (interval_mins * 60)
+                continue
+            if now < next_run:
+                continue
+
+            guild = self.bot.get_guild(guild_id)
+            if not guild:
+                self._autogame_next_run[guild_id] = now + (interval_mins * 60)
+                continue
+            channel = guild.get_channel(channel_id)
+            role = guild.get_role(role_id)
+            if not isinstance(channel, discord.TextChannel) or not role:
+                self._autogame_next_run[guild_id] = now + (interval_mins * 60)
+                continue
+            await self._run_scheduled_autogame(guild=guild, channel=channel, role=role, interval_mins=interval_mins)
+            self._autogame_next_run[guild_id] = now + (interval_mins * 60)
+
+    @_autogame_scheduler.before_loop
+    async def _before_autogame_scheduler(self):
+        await self.bot.wait_until_ready()
+
     # ── /game group ──────────────────────────────────────────────────────────
 
     game_group = app_commands.Group(name="game", description="Games & fun commands")
@@ -848,19 +1272,49 @@ class GameCommands(commands.Cog):
     @game_group.command(name="help", description="Show all available game commands")
     async def game_help(self, interaction: discord.Interaction):
         embed = discord.Embed(
-            title="🎮 Game Commands",
-            description=(
-                "**`/game tad <truth|dare>`** — Get a random Truth or Dare question.\n"
-                "**`/game rps <@opponent>`** — Rock Paper Scissors vs a user (or me!).\n"
-                "**`/game ttt <@opponent>`** — Tic-Tac-Toe in Discord buttons.\n"
-                "**`/game minesweeper <row> <column>`** — Pick a safe tile against a hidden mine.\n"
-                "**`/game scramble`** — Public word scramble challenge.\n"
-                "**`/game math`** — Public math challenge.\n"
-                "**`/game toss <heads|tails>`** — Quick coin toss for economy points.\n"
-                "**`/game quiz`** — Answer a random quiz question.\n"
-                "**`/game help`** — Shows this message.\n"
-            ),
+            title="🎮 Game Command Center",
+            description="Everything available in the Gamification Engine, grouped by play style.",
             color=0x5865F2,
+        )
+        embed.add_field(
+            name="🧠 Strategy Games",
+            value=(
+                "`/game ttt <@opponent>` — Multiplayer Tic-Tac-Toe.\n"
+                "`/game minesweeper <row> <column>` — Risk a hidden mine.\n"
+                "`/game memory <easy|medium|hard>` — Match hidden emoji pairs."
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="⚡ Speed & Focus",
+            value=(
+                "`/game scramble` — Fastest finger word scramble from today history.\n"
+                "`/game math <easy|medium|hard|extreme>` — Timed math race.\n"
+                "`/game guess <easy|medium|hard|extreme>` — Limited-attempt number guess.\n"
+                "`/game hangman` — Word guessing from message history + fallback list.\n"
+                "`/game quiz` — Single-user quick question."
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="🎲 Mini Games",
+            value=(
+                "`/game toss <heads|tails>` — Instant coin toss.\n"
+                "`/game dice` — Secure d6 roll.\n"
+                "`/game 8ball <question>` — Magic 8-Ball prediction.\n"
+                "`/game rps <@opponent>` — Rock-Paper-Scissors."
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="💰 Economy Rules",
+            value=(
+                "Direct wins/losses: **+15 / -10**\n"
+                "Public fastest-finger: **+20** correct, **-5** wrong, **0** ignore\n"
+                "Toss: **+10 / -10**\n"
+                "Use `/myprofile` for points, history, and ranking."
+            ),
+            inline=False,
         )
         embed.set_footer(text="an app by deep")
         await interaction.response.send_message(embed=embed, view=_branding_view())
@@ -926,6 +1380,7 @@ class GameCommands(commands.Cog):
     @app_commands.describe(opponent="The user to play against")
     async def game_rps(self, interaction: discord.Interaction, opponent: discord.Member):
         challenger = interaction.user
+        deadline_ts = _relative_ts(120)
 
         if opponent.id == challenger.id:
             await interaction.response.send_message("❌ You can't play against yourself!", ephemeral=True)
@@ -939,7 +1394,8 @@ class GameCommands(commands.Cog):
             description=(
                 f"{challenger.mention} **vs** {opponent.mention}\n\n"
                 "The opening move order was chosen securely.\n"
-                "Both players pick below. Results stay hidden until both choices are locked!"
+                "Both players pick below. Results stay hidden until both choices are locked!\n"
+                f"Round ends <t:{deadline_ts}:R>"
             ),
             color=0x5865F2,
         )
@@ -951,6 +1407,7 @@ class GameCommands(commands.Cog):
     @app_commands.describe(opponent="The user to play against")
     async def game_ttt(self, interaction: discord.Interaction, opponent: discord.Member):
         challenger = interaction.user
+        deadline_ts = _relative_ts(180)
 
         if opponent.id == challenger.id:
             await interaction.response.send_message("❌ You can't play against yourself!", ephemeral=True)
@@ -966,7 +1423,8 @@ class GameCommands(commands.Cog):
             description=(
                 f"{challenger.mention} **vs** {opponent.mention}\n\n"
                 f"The opening move order was chosen securely.\n"
-                f"Turn: **{starting_player.mention}** {'❌' if view.current_turn == 0 else '⭕'}"
+                f"Turn: **{starting_player.mention}** {'❌' if view.current_turn == 0 else '⭕'}\n"
+                f"Match ends <t:{deadline_ts}:R>"
             ),
             color=0x5865F2,
         )
@@ -975,6 +1433,125 @@ class GameCommands(commands.Cog):
             content=f"{challenger.mention} vs {opponent.mention}",
             embed=embed,
             view=view,
+        )
+
+    @game_group.command(name="memory", description="Play a memory match game by difficulty")
+    @app_commands.describe(level="Choose memory board level")
+    @app_commands.choices(level=[
+        app_commands.Choice(name="Easy (2x2)", value="easy"),
+        app_commands.Choice(name="Medium (4x4)", value="medium"),
+        app_commands.Choice(name="Hard (5x4)", value="hard"),
+    ])
+    async def game_memory(self, interaction: discord.Interaction, level: app_commands.Choice[str]):
+        layouts = {
+            "easy": (2, 2),
+            "medium": (4, 4),
+            "hard": (4, 5),
+        }
+        rows, cols = layouts[level.value]
+        deadline_ts = _relative_ts(120)
+        view = MemoryView(self, interaction.user, rows=rows, cols=cols, countdown_ts=deadline_ts)  # type: ignore[arg-type]
+        embed = discord.Embed(
+            title="🧠 Memory Match",
+            description=(
+                f"Level: **{level.name}**\n"
+                f"Find all matching pairs before <t:{deadline_ts}:R>.\n"
+                "Click tiles to reveal two emojis at a time."
+            ),
+            color=0x5865F2,
+        )
+        embed.set_footer(text="an app by deep")
+        await interaction.response.send_message(embed=embed, view=view)
+
+    @game_group.command(name="guess", description="Guess the number with level-based ranges")
+    @app_commands.describe(level="Choose difficulty")
+    @app_commands.choices(level=[
+        app_commands.Choice(name="Easy (1-50)", value="easy"),
+        app_commands.Choice(name="Medium (1-500)", value="medium"),
+        app_commands.Choice(name="Hard (1-5000)", value="hard"),
+        app_commands.Choice(name="Extreme (1-10000)", value="extreme"),
+    ])
+    async def game_guess(self, interaction: discord.Interaction, level: app_commands.Choice[str]):
+        ranges = {
+            "easy": (1, 50, 7),
+            "medium": (1, 500, 10),
+            "hard": (1, 5000, 12),
+            "extreme": (1, 10000, 14),
+        }
+        low, high, attempts = ranges[level.value]
+        answer = secrets.randbelow(high - low + 1) + low
+        end_ts = _relative_ts(120)
+        embed = discord.Embed(
+            title="🎯 Number Guess",
+            description=(
+                f"Range: **{low}-{high}**\n"
+                f"Attempts: **{attempts}**\n"
+                f"Time left: <t:{end_ts}:R>\n"
+                "Send your guesses in this channel."
+            ),
+            color=0x5865F2,
+        )
+        embed.set_footer(text="an app by deep")
+        await interaction.response.send_message(embed=embed, view=_branding_view())
+
+        def _check(message: discord.Message) -> bool:
+            return (
+                message.guild is not None
+                and interaction.guild is not None
+                and message.guild.id == interaction.guild.id
+                and message.channel.id == interaction.channel_id
+                and message.author.id == interaction.user.id
+                and message.content.strip().isdigit()
+            )
+
+        won = False
+        used = 0
+        while used < attempts and int(datetime.now(timezone.utc).timestamp()) < end_ts:
+            timeout = max(1, end_ts - int(datetime.now(timezone.utc).timestamp()))
+            try:
+                msg = await self.bot.wait_for("message", timeout=timeout, check=_check)
+            except asyncio.TimeoutError:
+                break
+            used += 1
+            guess = int(msg.content.strip())
+            if guess == answer:
+                won = True
+                break
+            hint = "Higher ⬆️" if guess < answer else "Lower ⬇️"
+            remaining = attempts - used
+            await interaction.followup.send(
+                f"{hint} • Attempts left: **{remaining}** • Ends <t:{end_ts}:R>",
+                view=_branding_view(),
+            )
+
+        points = DIRECT_GAME_WIN_POINTS if won else DIRECT_GAME_LOSS_POINTS
+        result_embed = discord.Embed(
+            title="🎯 Number Guess — Result",
+            description=(
+                f"{'🎉 Correct guess!' if won else '❌ Attempts/time exhausted.'}\n"
+                f"Target Number: **{answer}**"
+            ),
+            color=0x5865F2,
+        )
+        result_embed.add_field(name="Point Change", value=_format_points(points), inline=False)
+        result_embed.set_footer(text="an app by deep")
+        await interaction.followup.send(embed=result_embed, view=_branding_view())
+        asyncio.create_task(
+            self._record_game_outcome(
+                guild=interaction.guild,
+                game_name="Guess Number",
+                result=f"{interaction.user.display_name} {'won' if won else 'lost'}",
+                profile_updates=[
+                    {
+                        "member": interaction.user,
+                        "points": points,
+                        "wins": 1 if won else 0,
+                        "losses": 0 if won else 1,
+                        "total_games": 1,
+                    }
+                ],
+                players=[(interaction.user.display_name, interaction.user.id, _format_points(points))],
+            )
         )
 
     @game_group.command(name="minesweeper", description="Pick a tile and avoid the hidden mine")
@@ -1035,45 +1612,208 @@ class GameCommands(commands.Cog):
 
     @game_group.command(name="scramble", description="Start a public word scramble challenge")
     async def game_scramble(self, interaction: discord.Interaction):
-        words = [
-            "discord",
-            "economy",
-            "telemetry",
-            "python",
-            "mongodb",
-            "ranking",
-            "challenge",
-            "profile",
-        ]
-        answer = secrets.choice(words)
+        if not isinstance(interaction.channel, discord.TextChannel):
+            await interaction.response.send_message("❌ This command only works in text channels.", ephemeral=True)
+            return
+        answer = await self._pick_scramble_word_from_history(interaction.channel)
         scrambled = _scramble_text(answer)
-        await self._run_public_challenge(
-            interaction=interaction,
-            game_name="Word Scramble",
-            prompt_title="🔤 Word Scramble",
-            prompt_description=f"Unscramble this word: **{scrambled}**",
-            expected_answer=answer,
-            timeout_seconds=20,
+        end_ts = _relative_ts(60)
+        embed = discord.Embed(
+            title="🔤 Word Scramble",
+            description=(
+                f"Unscramble: **{scrambled}**\n"
+                f"First correct answer before <t:{end_ts}:R> wins."
+            ),
+            color=0x5865F2,
+        )
+        embed.set_footer(text="an app by deep")
+        await interaction.response.send_message(embed=embed, view=_branding_view())
+
+        penalized_users: set[int] = set()
+        updates: list[dict] = []
+        players: list[tuple[str, int, str]] = []
+        winner: discord.Member | discord.User | None = None
+
+        def _check(message: discord.Message) -> bool:
+            return (
+                message.guild is not None
+                and interaction.guild is not None
+                and message.guild.id == interaction.guild.id
+                and message.channel.id == interaction.channel_id
+                and not message.author.bot
+            )
+
+        while int(datetime.now(timezone.utc).timestamp()) < end_ts:
+            timeout = max(1, end_ts - int(datetime.now(timezone.utc).timestamp()))
+            try:
+                msg = await self.bot.wait_for("message", timeout=timeout, check=_check)
+            except asyncio.TimeoutError:
+                break
+            if secrets.compare_digest(msg.content.strip().lower(), answer.lower()):
+                winner = msg.author
+                updates.append(
+                    {
+                        "member": msg.author,
+                        "points": AUTO_GAME_WIN_POINTS,
+                        "wins": 1,
+                        "losses": 0,
+                        "total_games": 1,
+                    }
+                )
+                players.append((msg.author.display_name, msg.author.id, _format_points(AUTO_GAME_WIN_POINTS)))
+                break
+            if msg.author.id not in penalized_users:
+                penalized_users.add(msg.author.id)
+                updates.append(
+                    {
+                        "member": msg.author,
+                        "points": AUTO_GAME_LOSS_POINTS,
+                        "wins": 0,
+                        "losses": 1,
+                        "total_games": 1,
+                    }
+                )
+                players.append((msg.author.display_name, msg.author.id, _format_points(AUTO_GAME_LOSS_POINTS)))
+                await interaction.followup.send(
+                    f"❌ {msg.author.mention} wrong answer (-5). Ends <t:{end_ts}:R>",
+                    view=_branding_view(),
+                )
+
+        result_embed = discord.Embed(
+            title="🔤 Word Scramble — Result",
+            description=(
+                f"{'🏆 Winner: ' + winner.mention if winner else '⏰ No correct answer in time.'}\n"
+                f"Word: **{answer}**"
+            ),
+            color=0x5865F2,
+        )
+        result_embed.set_footer(text="an app by deep")
+        await interaction.followup.send(embed=result_embed, view=_branding_view())
+        asyncio.create_task(
+            self._record_game_outcome(
+                guild=interaction.guild,
+                game_name="Word Scramble",
+                result=f"{winner.display_name} won" if winner else "No winner",
+                profile_updates=updates,
+                players=players,
+            )
         )
 
-    @game_group.command(name="math", description="Start a public math challenge")
-    async def game_math(self, interaction: discord.Interaction):
-        left = secrets.randbelow(41) + 10
-        right = secrets.randbelow(31) + 1
-        operator = secrets.choice(["+", "-", "*"])
-        if operator == "+":
-            answer = left + right
-        elif operator == "-":
-            answer = left - right
+    @game_group.command(name="math", description="Start a fastest-finger math challenge by level")
+    @app_commands.describe(level="Choose difficulty")
+    @app_commands.choices(level=[
+        app_commands.Choice(name="Easy", value="easy"),
+        app_commands.Choice(name="Medium", value="medium"),
+        app_commands.Choice(name="Hard", value="hard"),
+        app_commands.Choice(name="Extreme", value="extreme"),
+    ])
+    async def game_math(self, interaction: discord.Interaction, level: app_commands.Choice[str]):
+        if level.value in {"easy", "medium"}:
+            left = secrets.randbelow(31) + 10
+            right = secrets.randbelow(21) + 1
+            operator = secrets.choice(["+", "-", "*"])
+            if operator == "+":
+                answer = left + right
+            elif operator == "-":
+                answer = left - right
+            else:
+                answer = left * right
+            prompt = f"Solve: **{left} {operator} {right} = ?**"
+        elif level.value == "hard":
+            a = secrets.randbelow(8) + 2
+            b = secrets.randbelow(8) + 2
+            c = secrets.randbelow(8) + 2
+            answer = (a * b) + c
+            prompt = f"Solve (BODMAS): **{a} × {b} + {c} = ?**"
         else:
-            answer = left * right
-        await self._run_public_challenge(
-            interaction=interaction,
-            game_name="Math Challenge",
-            prompt_title="🧮 Math Challenge",
-            prompt_description=f"Solve: **{left} {operator} {right} = ?**",
-            expected_answer=str(answer),
-            timeout_seconds=20,
+            x = secrets.randbelow(12) + 1
+            y = secrets.randbelow(10) + 1
+            z = secrets.randbelow(6) + 1
+            answer = (x * y) - z
+            prompt = f"Solve (algebra-style): If x={x}, y={y}, z={z}, find **xy - z**."
+
+        end_ts = _relative_ts(60)
+        embed = discord.Embed(
+            title="🧮 Math Challenge",
+            description=(
+                f"Level: **{level.name}**\n"
+                f"{prompt}\n"
+                f"Fastest correct answer before <t:{end_ts}:R> wins."
+            ),
+            color=0x5865F2,
+        )
+        embed.set_footer(text="an app by deep")
+        await interaction.response.send_message(embed=embed, view=_branding_view())
+
+        penalized_users: set[int] = set()
+        updates: list[dict] = []
+        players: list[tuple[str, int, str]] = []
+        winner: discord.Member | discord.User | None = None
+
+        def _check(message: discord.Message) -> bool:
+            return (
+                message.guild is not None
+                and interaction.guild is not None
+                and message.guild.id == interaction.guild.id
+                and message.channel.id == interaction.channel_id
+                and not message.author.bot
+            )
+
+        while int(datetime.now(timezone.utc).timestamp()) < end_ts:
+            timeout = max(1, end_ts - int(datetime.now(timezone.utc).timestamp()))
+            try:
+                msg = await self.bot.wait_for("message", timeout=timeout, check=_check)
+            except asyncio.TimeoutError:
+                break
+            text = msg.content.strip()
+            if text.lstrip("-").isdigit() and int(text) == answer:
+                winner = msg.author
+                updates.append(
+                    {
+                        "member": msg.author,
+                        "points": AUTO_GAME_WIN_POINTS,
+                        "wins": 1,
+                        "losses": 0,
+                        "total_games": 1,
+                    }
+                )
+                players.append((msg.author.display_name, msg.author.id, _format_points(AUTO_GAME_WIN_POINTS)))
+                break
+            if msg.author.id not in penalized_users:
+                penalized_users.add(msg.author.id)
+                updates.append(
+                    {
+                        "member": msg.author,
+                        "points": AUTO_GAME_LOSS_POINTS,
+                        "wins": 0,
+                        "losses": 1,
+                        "total_games": 1,
+                    }
+                )
+                players.append((msg.author.display_name, msg.author.id, _format_points(AUTO_GAME_LOSS_POINTS)))
+                await interaction.followup.send(
+                    f"❌ {msg.author.mention} wrong answer (-5). Ends <t:{end_ts}:R>",
+                    view=_branding_view(),
+                )
+
+        result_embed = discord.Embed(
+            title="🧮 Math Challenge — Result",
+            description=(
+                f"{'🏆 Winner: ' + winner.mention if winner else '⏰ No correct answer in time.'}\n"
+                f"Answer: **{answer}**"
+            ),
+            color=0x5865F2,
+        )
+        result_embed.set_footer(text="an app by deep")
+        await interaction.followup.send(embed=result_embed, view=_branding_view())
+        asyncio.create_task(
+            self._record_game_outcome(
+                guild=interaction.guild,
+                game_name="Math Challenge",
+                result=f"{winner.display_name} won" if winner else "No winner",
+                profile_updates=updates,
+                players=players,
+            )
         )
 
     # /game toss
@@ -1116,6 +1856,127 @@ class GameCommands(commands.Cog):
                 game_name="Coin Toss",
                 result=f"{interaction.user.display_name} {'won' if won else 'lost'}",
                 profile_updates=profile_updates,
+                players=[(interaction.user.display_name, interaction.user.id, _format_points(points))],
+            )
+        )
+
+    @game_group.command(name="8ball", description="Ask the Magic 8-Ball a question")
+    @app_commands.describe(question="Your yes/no question")
+    async def game_8ball(self, interaction: discord.Interaction, question: str):
+        response = secrets.choice(list(EIGHT_BALL_RESPONSES))
+        embed = discord.Embed(
+            title="🎱 Magic 8-Ball",
+            description=f"**Q:** {question}\n**A:** {response}",
+            color=0x5865F2,
+        )
+        embed.set_footer(text="an app by deep")
+        await interaction.response.send_message(embed=embed, view=_branding_view())
+
+    @game_group.command(name="dice", description="Roll a secure 6-sided dice")
+    async def game_dice(self, interaction: discord.Interaction):
+        value = secrets.choice(list(range(1, 7)))
+        embed = discord.Embed(
+            title="🎲 Dice Roll",
+            description=f"You rolled: **{value}** {'🎉' if value == 6 else '🎯'}",
+            color=0x5865F2,
+        )
+        embed.set_footer(text="an app by deep")
+        await interaction.response.send_message(embed=embed, view=_branding_view())
+
+    @game_group.command(name="hangman", description="Play reply-based hangman using message-history words")
+    async def game_hangman(self, interaction: discord.Interaction):
+        difficulty = secrets.choice(["easy", "medium", "hard"])
+        length_map = {
+            "easy": (4, 6, 8),
+            "medium": (6, 9, 9),
+            "hard": (8, 20, 10),
+        }
+        min_len, max_len, lives = length_map[difficulty]
+        word = await self._pick_hangman_word(interaction, min_len=min_len, max_len=max_len)
+        guessed_letters: set[str] = set()
+        wrong_letters: set[str] = set()
+        end_ts = _relative_ts(120)
+
+        def _masked() -> str:
+            return " ".join([ch if ch in guessed_letters else "＿" for ch in word])
+
+        embed = discord.Embed(
+            title="🪢 Hangman",
+            description=(
+                f"Difficulty: **{difficulty.title()}**\n"
+                f"Word: {_masked()}\n"
+                f"Lives: **{lives}**\n"
+                f"Ends <t:{end_ts}:R>\n"
+                "Reply in channel with one letter at a time."
+            ),
+            color=0x5865F2,
+        )
+        embed.set_footer(text="an app by deep")
+        await interaction.response.send_message(embed=embed, view=_branding_view())
+
+        def _check(message: discord.Message) -> bool:
+            text = message.content.strip().lower()
+            return (
+                message.guild is not None
+                and interaction.guild is not None
+                and message.guild.id == interaction.guild.id
+                and message.channel.id == interaction.channel_id
+                and message.author.id == interaction.user.id
+                and len(text) == 1
+                and text.isalpha()
+            )
+
+        won = False
+        while lives > 0 and int(datetime.now(timezone.utc).timestamp()) < end_ts:
+            timeout = max(1, end_ts - int(datetime.now(timezone.utc).timestamp()))
+            try:
+                msg = await self.bot.wait_for("message", timeout=timeout, check=_check)
+            except asyncio.TimeoutError:
+                break
+            letter = msg.content.strip().lower()
+            if letter in guessed_letters or letter in wrong_letters:
+                await interaction.followup.send("⚠️ Letter already used.", view=_branding_view())
+                continue
+            if letter in word:
+                guessed_letters.add(letter)
+            else:
+                wrong_letters.add(letter)
+                lives -= 1
+            current_mask = _masked()
+            await interaction.followup.send(
+                f"Word: **{current_mask}** | Lives: **{lives}** | Ends <t:{end_ts}:R>",
+                view=_branding_view(),
+            )
+            if all(ch in guessed_letters for ch in word):
+                won = True
+                break
+
+        points = AUTO_GAME_WIN_POINTS if won else AUTO_GAME_LOSS_POINTS
+        result_embed = discord.Embed(
+            title="🪢 Hangman — Result",
+            description=(
+                f"{'🏆 You solved it!' if won else '💀 You lost this round.'}\n"
+                f"Word: **{word}**"
+            ),
+            color=0x5865F2,
+        )
+        result_embed.add_field(name="Point Change", value=_format_points(points), inline=False)
+        result_embed.set_footer(text="an app by deep")
+        await interaction.followup.send(embed=result_embed, view=_branding_view())
+        asyncio.create_task(
+            self._record_game_outcome(
+                guild=interaction.guild,
+                game_name="Hangman",
+                result=f"{interaction.user.display_name} {'won' if won else 'lost'}",
+                profile_updates=[
+                    {
+                        "member": interaction.user,
+                        "points": points,
+                        "wins": 1 if won else 0,
+                        "losses": 0 if won else 1,
+                        "total_games": 1,
+                    }
+                ],
                 players=[(interaction.user.display_name, interaction.user.id, _format_points(points))],
             )
         )
