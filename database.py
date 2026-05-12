@@ -140,7 +140,7 @@ async def get_sorted_user_profiles(limit: int | None = None) -> list[dict]:
 
 
 async def get_user_global_rank(user_id: int) -> int:
-    """Deterministic global rank return karta hai."""
+    """Deterministic global rank return karta hai; ties me lower user_id ko higher rank milta hai."""
     profile = await get_user_profile(user_id)
     higher_count = await user_profiles_col.count_documents(
         {

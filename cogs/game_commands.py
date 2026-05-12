@@ -48,6 +48,10 @@ def _format_points(delta: int | None) -> str:
     return f"{delta:+d}" if delta else "0"
 
 
+def _member_delta(member: discord.abc.User, delta: int) -> str:
+    return _format_points(None if getattr(member, "bot", False) else delta)
+
+
 # ── RPS View ─────────────────────────────────────────────────────────────────
 
 class RPSView(discord.ui.View):
@@ -61,24 +65,32 @@ class RPSView(discord.ui.View):
         self.opponent = opponent
         self.game_state = game_state
         self.first_player_id = secrets.choice([challenger.id, opponent.id])
+        self.opening_move_complete = False
+        self.resolved = False
         self.add_item(discord.ui.Button(label=APP_BUTTON_LABEL, url=APP_LINK, style=discord.ButtonStyle.link))
         self.add_item(discord.ui.Button(label=INSTA_BUTTON_LABEL, url=INSTA_LINK, style=discord.ButtonStyle.link))
 
         if opponent.bot and self.first_player_id == opponent.id:
             self.game_state[opponent.id] = secrets.choice(RPS_CHOICE_EMOJIS)
+            self.opening_move_complete = True
 
     async def _handle_pick(self, interaction: discord.Interaction, choice: str):
         uid = interaction.user.id
         if uid not in (self.challenger.id, self.opponent.id):
             await interaction.response.send_message("⛔ You are not a player in this game.", ephemeral=True)
             return
-        if not self.game_state.get(self.first_player_id) and uid != self.first_player_id:
+        if self.resolved:
+            await interaction.response.send_message("✅ This match is already resolved.", ephemeral=True)
+            return
+        if not self.opening_move_complete and uid != self.first_player_id:
             await interaction.response.send_message("⏳ Please wait for the opening move.", ephemeral=True)
             return
         if self.game_state.get(uid):
             await interaction.response.send_message("✅ You have already chosen!", ephemeral=True)
             return
         self.game_state[uid] = choice
+        if uid == self.first_player_id:
+            self.opening_move_complete = True
         await interaction.response.send_message(f"✅ You chose {choice}. Waiting for the other player…", ephemeral=True)
 
         if self.opponent.bot and uid == self.challenger.id and not self.game_state.get(self.opponent.id):
@@ -88,6 +100,9 @@ class RPSView(discord.ui.View):
             await self._resolve(interaction)
 
     async def _resolve(self, interaction: discord.Interaction):
+        if self.resolved:
+            return
+        self.resolved = True
         c_pick = self.game_state[self.challenger.id]
         o_pick = self.game_state[self.opponent.id]
         c_name = self.CHOICES[c_pick]
@@ -121,29 +136,27 @@ class RPSView(discord.ui.View):
             name="Points",
             value=(
                 f"{self.challenger.display_name}: {_format_points(point_changes[self.challenger.id])}\n"
-                f"{self.opponent.display_name}: {_format_points(None if self.opponent.bot else point_changes[self.opponent.id])}"
+                f"{self.opponent.display_name}: {_member_delta(self.opponent, point_changes[self.opponent.id])}"
             ),
             inline=False,
         )
 
-        await self.cog._apply_profile_updates(
-            [
-                {
-                    "member": self.challenger,
-                    "points": point_changes[self.challenger.id],
-                    "wins": 1 if point_changes[self.challenger.id] > 0 else 0,
-                    "losses": 1 if point_changes[self.challenger.id] < 0 else 0,
-                    "total_games": 1,
-                },
-                {
-                    "member": self.opponent,
-                    "points": point_changes[self.opponent.id],
-                    "wins": 1 if point_changes[self.opponent.id] > 0 else 0,
-                    "losses": 1 if point_changes[self.opponent.id] < 0 else 0,
-                    "total_games": 1,
-                },
-            ]
-        )
+        profile_updates = [
+            {
+                "member": self.challenger,
+                "points": point_changes[self.challenger.id],
+                "wins": 1 if point_changes[self.challenger.id] > 0 else 0,
+                "losses": 1 if point_changes[self.challenger.id] < 0 else 0,
+                "total_games": 1,
+            },
+            {
+                "member": self.opponent,
+                "points": point_changes[self.opponent.id],
+                "wins": 1 if point_changes[self.opponent.id] > 0 else 0,
+                "losses": 1 if point_changes[self.opponent.id] < 0 else 0,
+                "total_games": 1,
+            },
+        ]
 
         self.stop()
         for item in self.children:
@@ -154,13 +167,14 @@ class RPSView(discord.ui.View):
         except Exception:
             pass
         asyncio.create_task(
-            self.cog._log_game_result(
+            self.cog._record_game_outcome(
                 guild=interaction.guild,
                 game_name="Rock Paper Scissors",
                 result=result_summary,
+                profile_updates=profile_updates,
                 players=[
                     (self.challenger.display_name, self.challenger.id, _format_points(point_changes[self.challenger.id])),
-                    (self.opponent.display_name, self.opponent.id, _format_points(None if self.opponent.bot else point_changes[self.opponent.id])),
+                    (self.opponent.display_name, self.opponent.id, _member_delta(self.opponent, point_changes[self.opponent.id])),
                 ],
             )
         )
@@ -222,24 +236,22 @@ class TTTButton(discord.ui.Button):
                 color=0x5865F2,
             )
             loser = view.players[view.current_turn ^ 1]
-            await view.cog._apply_profile_updates(
-                [
-                    {
-                        "member": current_player,
-                        "points": DIRECT_GAME_WIN_POINTS,
-                        "wins": 1,
-                        "losses": 0,
-                        "total_games": 1,
-                    },
-                    {
-                        "member": loser,
-                        "points": DIRECT_GAME_LOSS_POINTS,
-                        "wins": 0,
-                        "losses": 1,
-                        "total_games": 1,
-                    },
-                ]
-            )
+            profile_updates = [
+                {
+                    "member": current_player,
+                    "points": DIRECT_GAME_WIN_POINTS,
+                    "wins": 1,
+                    "losses": 0,
+                    "total_games": 1,
+                },
+                {
+                    "member": loser,
+                    "points": DIRECT_GAME_LOSS_POINTS,
+                    "wins": 0,
+                    "losses": 1,
+                    "total_games": 1,
+                },
+            ]
             embed.add_field(
                 name="Points",
                 value=(
@@ -252,10 +264,11 @@ class TTTButton(discord.ui.Button):
             view.stop()
             await interaction.response.edit_message(embed=embed, view=view)
             asyncio.create_task(
-                view.cog._log_game_result(
+                view.cog._record_game_outcome(
                     guild=interaction.guild,
                     game_name="Tic-Tac-Toe",
                     result=f"{current_player.display_name} won",
+                    profile_updates=profile_updates,
                     players=[
                         (current_player.display_name, current_player.id, _format_points(DIRECT_GAME_WIN_POINTS)),
                         (loser.display_name, loser.id, _format_points(DIRECT_GAME_LOSS_POINTS)),
@@ -268,24 +281,22 @@ class TTTButton(discord.ui.Button):
                 description="🤝 It's a **Draw**!",
                 color=0x5865F2,
             )
-            await view.cog._apply_profile_updates(
-                [
-                    {
-                        "member": view.players[0],
-                        "points": 0,
-                        "wins": 0,
-                        "losses": 0,
-                        "total_games": 1,
-                    },
-                    {
-                        "member": view.players[1],
-                        "points": 0,
-                        "wins": 0,
-                        "losses": 0,
-                        "total_games": 1,
-                    },
-                ]
-            )
+            profile_updates = [
+                {
+                    "member": view.players[0],
+                    "points": 0,
+                    "wins": 0,
+                    "losses": 0,
+                    "total_games": 1,
+                },
+                {
+                    "member": view.players[1],
+                    "points": 0,
+                    "wins": 0,
+                    "losses": 0,
+                    "total_games": 1,
+                },
+            ]
             embed.add_field(
                 name="Points",
                 value=(
@@ -298,10 +309,11 @@ class TTTButton(discord.ui.Button):
             view.stop()
             await interaction.response.edit_message(embed=embed, view=view)
             asyncio.create_task(
-                view.cog._log_game_result(
+                view.cog._record_game_outcome(
                     guild=interaction.guild,
                     game_name="Tic-Tac-Toe",
                     result="Draw",
+                    profile_updates=profile_updates,
                     players=[
                         (view.players[0].display_name, view.players[0].id, "0"),
                         (view.players[1].display_name, view.players[1].id, "0"),
@@ -324,7 +336,7 @@ class TTTView(discord.ui.View):
         super().__init__(timeout=180)
         self.cog = cog
         self.players = [p1, p2]
-        if secrets.choice([True, False]):
+        if secrets.randbelow(2):
             self.players.reverse()
         self.current_turn = 0
         self.board: list[list[str]] = [["", "", ""], ["", "", ""], ["", "", ""]]
@@ -414,23 +426,22 @@ class QuizView(discord.ui.View):
                 losses = 1
                 result = "Wrong answer"
 
-            await self.cog._apply_profile_updates(
-                [
-                    {
-                        "member": interaction.user,
-                        "points": points,
-                        "wins": wins,
-                        "losses": losses,
-                        "total_games": 1,
-                    }
-                ]
-            )
+            profile_updates = [
+                {
+                    "member": interaction.user,
+                    "points": points,
+                    "wins": wins,
+                    "losses": losses,
+                    "total_games": 1,
+                }
+            ]
             await interaction.response.edit_message(content=msg, view=self)
             asyncio.create_task(
-                self.cog._log_game_result(
+                self.cog._record_game_outcome(
                     guild=interaction.guild,
                     game_name="Quiz",
                     result=result,
+                    profile_updates=profile_updates,
                     players=[(interaction.user.display_name, interaction.user.id, _format_points(points))],
                 )
             )
@@ -693,6 +704,31 @@ class GameCommands(commands.Cog):
             players=players,
         )
 
+    async def _record_game_outcome(
+        self,
+        *,
+        guild: discord.Guild | None,
+        game_name: str,
+        result: str,
+        players: list[tuple[str, int, str]],
+        profile_updates: list[dict],
+    ):
+        try:
+            await self._apply_profile_updates(profile_updates)
+        except Exception as exc:
+            await log_exception(
+                self.bot,
+                title=f"{game_name} Economy Update Failed",
+                error=exc,
+                context=f"Guild: {guild.id if guild else 'unknown'} | Result: {result}",
+            )
+        await self._log_game_result(
+            guild=guild,
+            game_name=game_name,
+            result=result,
+            players=players,
+        )
+
     # ── Keyword cache ────────────────────────────────────────────────────────
 
     @tasks.loop(seconds=KEYWORD_CACHE_TTL)
@@ -803,7 +839,7 @@ class GameCommands(commands.Cog):
             title="🪨 Rock Paper Scissors",
             description=(
                 f"{challenger.mention} **vs** {opponent.mention}\n\n"
-                "A secure opening turn has been chosen.\n"
+                "The opening move order was chosen securely.\n"
                 "Both players pick below. Results stay hidden until both choices are locked!"
             ),
             color=0x5865F2,
@@ -830,7 +866,7 @@ class GameCommands(commands.Cog):
             title="❎⭕ Tic-Tac-Toe",
             description=(
                 f"{challenger.mention} **vs** {opponent.mention}\n\n"
-                f"A secure opening turn was chosen.\n"
+                f"The opening move order was chosen securely.\n"
                 f"Turn: **{starting_player.mention}** {'❌' if view.current_turn == 0 else '⭕'}"
             ),
             color=0x5865F2,
@@ -853,18 +889,15 @@ class GameCommands(commands.Cog):
         outcome = secrets.choice(["heads", "tails"])
         won = call.value == outcome
         points = TOSS_WIN_POINTS if won else TOSS_LOSS_POINTS
-
-        await self._apply_profile_updates(
-            [
-                {
-                    "member": interaction.user,
-                    "points": points,
-                    "wins": 1 if won else 0,
-                    "losses": 0 if won else 1,
-                    "total_games": 1,
-                }
-            ]
-        )
+        profile_updates = [
+            {
+                "member": interaction.user,
+                "points": points,
+                "wins": 1 if won else 0,
+                "losses": 0 if won else 1,
+                "total_games": 1,
+            }
+        ]
 
         embed = discord.Embed(
             title="🪙 Coin Toss",
@@ -880,10 +913,11 @@ class GameCommands(commands.Cog):
         await interaction.response.send_message(embed=embed, view=_branding_view())
 
         asyncio.create_task(
-            self._log_game_result(
+            self._record_game_outcome(
                 guild=interaction.guild,
                 game_name="Coin Toss",
                 result=f"{interaction.user.display_name} {'won' if won else 'lost'}",
+                profile_updates=profile_updates,
                 players=[(interaction.user.display_name, interaction.user.id, _format_points(points))],
             )
         )
@@ -934,7 +968,7 @@ class GameCommands(commands.Cog):
         total_games = profile.get("total_games", 0)
         wins = profile.get("wins", 0)
         losses = profile.get("losses", 0)
-        win_rate = (wins / total_games * 100) if total_games else 0.0
+        win_rate = ((wins / total_games) * 100) if total_games else 0.0
 
         embed = discord.Embed(
             title=f"📊 {interaction.user.display_name}'s Profile",
