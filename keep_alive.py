@@ -98,7 +98,8 @@ def _api_json_guard(func):
         try:
             return func(*args, **kwargs)
         except Exception as exc:
-            return jsonify({"error": str(exc)}), 500
+            app.logger.exception("API request failed: %s", exc)
+            return jsonify({"error": "Internal server error"}), 500
 
     return wrapper
 
