@@ -77,6 +77,42 @@ class SetupCommands(commands.Cog):
         await db.update_guild_settings(interaction.guild_id, {"logs_channel_id": channel.id})
         await interaction.response.send_message(f"✅ Logs channel set to {channel.mention}")
 
+    @setup_group.command(name="game_logs", description="Set the local channel for server game result summaries")
+    async def setup_game_logs(self, interaction: discord.Interaction, channel: discord.TextChannel):
+        await db.update_guild_settings(interaction.guild_id, {"game_logs_channel_id": channel.id})
+        await interaction.response.send_message(
+            f"✅ Local game logs channel set to {channel.mention}.\n"
+            "Game summaries will now be posted here in addition to centralized telemetry.",
+            view=self._branding_view(),
+        )
+
+    @setup_group.command(name="autogame", description="Configure automated game drops")
+    @app_commands.describe(channel="Target channel for auto-games", role="Role to ping for auto-games", interval_in_minutes="Event interval in minutes")
+    async def setup_autogame(
+        self,
+        interaction: discord.Interaction,
+        channel: discord.TextChannel,
+        role: discord.Role,
+        interval_in_minutes: app_commands.Range[int, 1, 1440],
+    ):
+        await db.update_guild_settings(
+            interaction.guild_id,
+            {
+                "autogame_channel_id": channel.id,
+                "autogame_role_id": role.id,
+                "autogame_interval_minutes": int(interval_in_minutes),
+            },
+        )
+        await interaction.response.send_message(
+            (
+                "✅ Auto-game scheduler updated.\n"
+                f"Channel: {channel.mention}\n"
+                f"Role: {role.mention}\n"
+                f"Interval: **{interval_in_minutes} minute(s)**"
+            ),
+            view=self._branding_view(),
+        )
+
     @setup_group.command(name="role", description="Set the reward role and test it with buttons")
     async def setup_role(self, interaction: discord.Interaction, role: discord.Role):
         await db.update_guild_settings(interaction.guild_id, {"reward_role_id": role.id})
@@ -169,6 +205,8 @@ class SetupCommands(commands.Cog):
         
         embed.add_field(name="`/setup channel`", value="Leaderboard list kahan bhejni hai wo set karo.", inline=False)
         embed.add_field(name="`/setup logs`", value="Backup (JSON & HTML) kaha bhejna hai wo set karo.", inline=False)
+        embed.add_field(name="`/setup game_logs`", value="Har game result ka local server summary channel set karo.", inline=False)
+        embed.add_field(name="`/setup autogame`", value="Auto-game channel + ping role + interval configure karo.", inline=False)
         embed.add_field(name="`/setup role`", value="Reward role assign karo with Test Buttons.", inline=False)
         embed.add_field(name="`/setup days` & `/setup top_count`", value="Timer (days) aur kitne logo ko role dena hai (Top N) configure karo.", inline=False)
         embed.add_field(name="`/setup reset` & `/setup hard_reset`", value="Current messages reset karne ya pura data udane ke liye.", inline=False)
