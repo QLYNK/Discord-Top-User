@@ -1,6 +1,6 @@
 import os
 from motor.motor_asyncio import AsyncIOMotorClient
-from pymongo import UpdateOne
+from pymongo import ReturnDocument, UpdateOne
 
 # Environment variable se MongoDB URI lena
 MONGO_URI = os.getenv("MONGO_URI")
@@ -12,6 +12,17 @@ db = client["LeaderboardBotDB"]
 # Collections
 settings_col = db["GuildSettings"]
 activity_col = db["ActivityData"]
+user_profiles_col = db["user_profiles"]
+
+
+def _default_user_profile(user_id: int) -> dict:
+    return {
+        "user_id": user_id,
+        "points": 0,
+        "wins": 0,
+        "losses": 0,
+        "total_games": 0,
+    }
 
 async def get_guild_settings(guild_id: int):
     """Server ki settings fetch karta hai, nahi hone par default create karta hai."""
@@ -83,3 +94,60 @@ async def bulk_update_activity(buffer_data: dict):
     # Agar operations list me data hai, tabhi DB call karo
     if operations:
         await activity_col.bulk_write(operations)
+
+
+async def get_user_profile(user_id: int) -> dict:
+    """Economy profile fetch karta hai, nahi hone par default create karta hai."""
+    return await user_profiles_col.find_one_and_update(
+        {"user_id": user_id},
+        {"$setOnInsert": _default_user_profile(user_id)},
+        upsert=True,
+        return_document=ReturnDocument.AFTER,
+    )
+
+
+async def bulk_update_user_profiles(updates: list[dict]):
+    """Ek ya zyada user economy profiles ko bulk me update karta hai."""
+    operations = []
+
+    for update in updates:
+        user_id = update.get("user_id")
+        if user_id is None:
+            continue
+
+        inc_fields = {
+            field: int(update.get(field, 0))
+            for field in ("points", "wins", "losses", "total_games")
+            if int(update.get(field, 0)) != 0
+        }
+
+        payload = {"$setOnInsert": _default_user_profile(int(user_id))}
+        if inc_fields:
+            payload["$inc"] = inc_fields
+
+        operations.append(UpdateOne({"user_id": int(user_id)}, payload, upsert=True))
+
+    if operations:
+        await user_profiles_col.bulk_write(operations)
+
+
+async def get_sorted_user_profiles(limit: int | None = None) -> list[dict]:
+    """Points ke hisaab se global sorted profiles return karta hai."""
+    cursor = user_profiles_col.find({}).sort([("points", -1), ("user_id", 1)])
+    if limit is not None:
+        cursor = cursor.limit(limit)
+    return await cursor.to_list(length=limit)
+
+
+async def get_user_global_rank(user_id: int) -> int:
+    """Deterministic global rank return karta hai."""
+    profile = await get_user_profile(user_id)
+    higher_count = await user_profiles_col.count_documents(
+        {
+            "$or": [
+                {"points": {"$gt": profile["points"]}},
+                {"points": profile["points"], "user_id": {"$lt": user_id}},
+            ]
+        }
+    )
+    return higher_count + 1

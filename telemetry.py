@@ -48,6 +48,31 @@ async def send_master_log(
         pass
 
 
+async def send_game_telemetry(
+    bot: discord.Client,
+    *,
+    guild: discord.Guild | None,
+    game_name: str,
+    result: str,
+    players: Iterable[tuple[str, int, str]],
+) -> None:
+    guild_name = guild.name if guild else "Unknown Server"
+    guild_id = guild.id if guild else 0
+    player_lines = [f"• {name} ({user_id})" for name, user_id, _ in players]
+    point_lines = [f"• {name}: {delta}" for name, _, delta in players]
+
+    await send_master_log(
+        bot,
+        f"Game Result • {game_name}",
+        result,
+        fields=[
+            ("Server", f"{guild_name} ({guild_id})", False),
+            ("Players", "\n".join(player_lines) or "-", False),
+            ("Point Changes", "\n".join(point_lines) or "-", False),
+        ],
+    )
+
+
 async def log_exception(
     bot: discord.Client,
     *,
