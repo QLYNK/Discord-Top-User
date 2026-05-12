@@ -77,7 +77,13 @@ python main.py
 2. In Render, create a **New Web Service** from this repository.
 3. Configure service to build using Docker and point to **`Docerfile`**.
 4. Set environment variables from the list below.
-5. Deploy and monitor logs.
+5. Deploy and monitor logs (the web API + bot both auto-start from `python main.py`).
+
+### API runtime compatibility
+
+- Render runtime uses `PORT` automatically for the Flask API server.
+- `api/index.py` is kept as the serverless-compatible API entrypoint (`from keep_alive import app`).
+- API endpoints, request shapes, and response formats remain unchanged.
 
 ### Optional local Docker check
 

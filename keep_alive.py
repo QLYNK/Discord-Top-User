@@ -544,7 +544,7 @@ def _handle_chunk_flow(tmp_dir: Path):
 
 
 def run():
-    app.run(host="0.0.0.0", port=8080)
+    app.run(host="0.0.0.0", port=int(os.getenv("PORT", "8080")))
 
 
 # ── Utilities auth routes ──────────────────────────────────────────────────
