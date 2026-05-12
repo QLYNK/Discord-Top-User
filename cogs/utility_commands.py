@@ -1,22 +1,105 @@
 import asyncio
 import time
-from datetime import datetime, timezone
-from urllib.parse import quote
+from datetime import timezone
 
-import aiohttp
 import discord
 from discord import app_commands
 from discord.ext import commands
 
-from telemetry import send_master_log
-
 APP_LINK = "https://deepdey.vercel.app/"
 INSTA_LINK = "https://instagram.com/deepdey.official"
-GITHUB_LINK = "https://github.com/deepdeyiitgn/Discord-Top-User"
-QUICKLINK_URL = "https://qlynk.me/"
-STUDYBOT_URL = "https://studybot.qlynk.me/"
-CLOCK_OVERLAY_URL = "https://clock.qlynk.me/"
-QLYNK_NODE_URL = "https://node.qlynk.me/"
+
+
+class PollView(discord.ui.View):
+    def __init__(self, author_id: int, question: str, options: list[str], timer_hours: float | None):
+        super().__init__(timeout=None)
+        self.author_id = author_id
+        self.question = question
+        self.options = options
+        self.timer_hours = timer_hours
+        self.votes: dict[int, int] = {}
+        self.message: discord.Message | None = None
+        self.ended = False
+
+        emojis = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣"]
+        for idx, option in enumerate(options):
+            button = discord.ui.Button(
+                label=f"{emojis[idx]} {option[:60]}",
+                style=discord.ButtonStyle.primary,
+                custom_id=f"poll_vote_{idx}",
+            )
+
+            async def callback(interaction: discord.Interaction, choice_index: int = idx):
+                if self.ended:
+                    await interaction.response.send_message("This poll has ended.", ephemeral=True)
+                    return
+                self.votes[interaction.user.id] = choice_index
+                await interaction.response.edit_message(embed=self.build_embed(), view=self)
+
+            button.callback = callback
+            self.add_item(button)
+
+    def build_embed(self) -> discord.Embed:
+        total_votes = len(self.votes)
+        embed = discord.Embed(title="📊 Interactive Poll", color=0x5865F2)
+        embed.add_field(name="Question", value=self.question, inline=False)
+
+        counts = [0] * len(self.options)
+        for vote in self.votes.values():
+            if 0 <= vote < len(counts):
+                counts[vote] += 1
+
+        for idx, option in enumerate(self.options):
+            count = counts[idx]
+            percent = (count / total_votes * 100) if total_votes else 0
+            embed.add_field(
+                name=f"Option {idx + 1}",
+                value=f"**{option}**\nVotes: **{count}** ({percent:.1f}%)",
+                inline=False,
+            )
+
+        if self.timer_hours:
+            end_ts = int(time.time() + int(self.timer_hours * 3600))
+            embed.set_footer(text=f"Poll ends at <t:{end_ts}:F>")
+        else:
+            embed.set_footer(text="No timer set. Poll stays open until bot restart.")
+        return embed
+
+    async def close_poll(self) -> None:
+        if self.ended:
+            return
+        self.ended = True
+        for item in self.children:
+            if isinstance(item, discord.ui.Button):
+                item.disabled = True
+
+        if not self.message:
+            return
+
+        counts = [0] * len(self.options)
+        for vote in self.votes.values():
+            if 0 <= vote < len(counts):
+                counts[vote] += 1
+
+        total_votes = len(self.votes)
+        if total_votes == 0:
+            winner_text = "Poll ended with no votes."
+        else:
+            max_votes = max(counts)
+            winner_indexes = [i for i, c in enumerate(counts) if c == max_votes]
+            if len(winner_indexes) > 1:
+                winners = ", ".join(self.options[i] for i in winner_indexes)
+                pct = (max_votes / total_votes) * 100
+                winner_text = f"Poll ended in a tie: **{winners}** with **{max_votes}** votes each ({pct:.1f}%)."
+            else:
+                win_idx = winner_indexes[0]
+                pct = (max_votes / total_votes) * 100
+                winner_text = (
+                    f"Poll ended. Winning option: **{self.options[win_idx]}** "
+                    f"with **{max_votes}** votes ({pct:.1f}%)."
+                )
+
+        await self.message.edit(content=winner_text, embed=self.build_embed(), view=self)
 
 
 class UtilityCommands(commands.Cog):
@@ -24,151 +107,75 @@ class UtilityCommands(commands.Cog):
         self.bot = bot
 
     @staticmethod
-    def _links_view() -> discord.ui.View:
+    def _stats_links_view() -> discord.ui.View:
         view = discord.ui.View()
-        view.add_item(discord.ui.Button(label="Portfolio", url=APP_LINK, style=discord.ButtonStyle.link))
-        view.add_item(discord.ui.Button(label="Home Server", url="https://discord.com/invite/t6ZKNw556n", style=discord.ButtonStyle.link))
-        view.add_item(discord.ui.Button(label="GitHub Repo", url=GITHUB_LINK, style=discord.ButtonStyle.link))
-        view.add_item(discord.ui.Button(label="QuickLink", url=QUICKLINK_URL, style=discord.ButtonStyle.link))
-        view.add_item(discord.ui.Button(label="StudyBot", url=STUDYBOT_URL, style=discord.ButtonStyle.link))
-        view.add_item(discord.ui.Button(label="Clock Overlay", url=CLOCK_OVERLAY_URL, style=discord.ButtonStyle.link))
-        view.add_item(discord.ui.Button(label="QLYNK Node Server", url=QLYNK_NODE_URL, style=discord.ButtonStyle.link))
+        view.add_item(discord.ui.Button(label="Website", url=APP_LINK, style=discord.ButtonStyle.link))
+        view.add_item(discord.ui.Button(label="Instagram", url=INSTA_LINK, style=discord.ButtonStyle.link))
         return view
 
-    @app_commands.command(name="now", description="Show live current time, date, and uptime")
-    async def now(self, interaction: discord.Interaction):
+    @app_commands.command(name="stats", description="Show server and bot statistics")
+    async def stats(self, interaction: discord.Interaction):
+        guild = interaction.guild
+        if not guild:
+            await interaction.response.send_message("This command can only be used in a server.", ephemeral=True)
+            return
+
+        owner = guild.owner or (await self.bot.fetch_user(guild.owner_id) if guild.owner_id else None)
+        bots = sum(1 for member in guild.members if member.bot)
+        online = sum(1 for member in guild.members if member.status != discord.Status.offline)
+
+        app_info = await self.bot.application_info()
+        bot_owner = app_info.owner
         now_ts = int(time.time())
         start_ts = int(self.bot.start_time.replace(tzinfo=timezone.utc).timestamp()) if getattr(self.bot, "start_time", None) else now_ts
-        embed = discord.Embed(title="🕒 Current Time", color=0x5865F2)
-        embed.add_field(name="Live Clock", value=f"<t:{now_ts}:T>", inline=True)
-        embed.add_field(name="Date", value=f"<t:{now_ts}:D>", inline=True)
-        embed.add_field(name="Uptime", value=f"<t:{start_ts}:R>", inline=False)
-        embed.set_footer(text="an app by deep")
-        await interaction.response.send_message(embed=embed)
 
-    async def _fetch_weather(self, session: aiohttp.ClientSession, latitude: float, longitude: float, timezone_name: str):
-        weather_url = (
-            "https://api.open-meteo.com/v1/forecast"
-            f"?latitude={latitude}&longitude={longitude}&current_weather=true&timezone={quote(timezone_name or 'auto')}"
-        )
-        async with session.get(weather_url) as response:
-            response.raise_for_status()
-            return await response.json()
+        embed = discord.Embed(title="📈 Server and Bot Stats", color=0x5865F2)
+        if guild.icon:
+            embed.set_thumbnail(url=guild.icon.url)
 
-    @app_commands.command(name="weather", description="Get weather for top city matches")
-    async def weather(self, interaction: discord.Interaction, city: str):
-        await interaction.response.defer()
-        geo_url = f"https://geocoding-api.open-meteo.com/v1/search?name={quote(city)}"
-        timeout = aiohttp.ClientTimeout(total=20)
+        embed.add_field(name="Server Name", value=guild.name, inline=True)
+        embed.add_field(name="Description", value=guild.description or "No description set.", inline=True)
+        embed.add_field(name="Boost Level", value=f"Level {guild.premium_tier}", inline=True)
+        embed.add_field(name="Total Members", value=str(guild.member_count or 0), inline=True)
+        embed.add_field(name="Bot Count", value=str(bots), inline=True)
+        embed.add_field(name="Online Count", value=str(online), inline=True)
+        embed.add_field(name="Server Owner", value=owner.mention if owner else "Unknown", inline=True)
+        embed.add_field(name="Server Logo", value="Available" if guild.icon else "Not set", inline=True)
 
-        async with aiohttp.ClientSession(timeout=timeout) as session:
-            async with session.get(geo_url) as response:
-                response.raise_for_status()
-                geo_data = await response.json()
+        if self.bot.user and self.bot.user.display_avatar:
+            embed.set_author(name=f"{self.bot.user.name}", icon_url=self.bot.user.display_avatar.url)
 
-            results = geo_data.get("results", [])
-            if not results:
-                await interaction.followup.send("No locations found for that city.", ephemeral=True)
-                return
+        embed.add_field(name="Bot Owner", value=str(bot_owner), inline=True)
+        embed.add_field(name="Uptime", value=f"<t:{start_ts}:R>", inline=True)
+        embed.add_field(name="API Latency", value=f"{round(self.bot.latency * 1000)} ms", inline=True)
+        embed.set_footer(text="Professional utility dashboard")
 
-            count = min(5, len(results))
-            if count >= 3:
-                chosen = results[:count]
-            else:
-                chosen = results[:len(results)]
+        await interaction.response.send_message(embed=embed, view=self._stats_links_view())
 
-            tasks = [
-                self._fetch_weather(
-                    session,
-                    float(item.get("latitude", 0)),
-                    float(item.get("longitude", 0)),
-                    item.get("timezone", "auto"),
-                )
-                for item in chosen
-            ]
-            weather_data = await asyncio.gather(*tasks, return_exceptions=True)
+    @app_commands.command(name="poll", description="Create an interactive poll with up to 5 options")
+    async def poll(
+        self,
+        interaction: discord.Interaction,
+        question: str,
+        opt1: str,
+        opt2: str,
+        opt3: str | None = None,
+        opt4: str | None = None,
+        opt5: str | None = None,
+        timer_in_hours: app_commands.Range[float, 0.1, 168] | None = None,
+    ):
+        options = [opt1, opt2] + [opt for opt in [opt3, opt4, opt5] if opt]
+        view = PollView(interaction.user.id, question, options, timer_in_hours)
+        await interaction.response.send_message(embed=view.build_embed(), view=view)
+        message = await interaction.original_response()
+        view.message = message
 
-        embed = discord.Embed(
-            title=f"🌦️ Weather Snapshot — {city.title()}",
-            description="Top matching locations and their current weather.",
-            color=0x5865F2,
-            timestamp=datetime.now(timezone.utc),
-        )
+        if timer_in_hours:
+            async def close_later() -> None:
+                await asyncio.sleep(timer_in_hours * 3600)
+                await view.close_poll()
 
-        for place, weather in zip(chosen, weather_data):
-            place_name = f"{place.get('name', 'Unknown')}, {place.get('country', 'Unknown')}"
-            if isinstance(weather, Exception):
-                embed.add_field(name=place_name, value="Unable to fetch weather for this location.", inline=False)
-                continue
-
-            current = weather.get("current_weather") or {}
-            temp = current.get("temperature", "N/A")
-            wind = current.get("windspeed", "N/A")
-            code = current.get("weathercode", "N/A")
-            observed_at = current.get("time", "Unknown")
-            embed.add_field(
-                name=place_name,
-                value=(
-                    f"**Temperature:** {temp}°C\n"
-                    f"**Wind:** {wind} km/h\n"
-                    f"**Weather Code:** {code}\n"
-                    f"**Observed:** `{observed_at}`"
-                ),
-                inline=False,
-            )
-
-        embed.set_footer(text="an app by deep")
-        await interaction.followup.send(embed=embed)
-
-    @app_commands.command(name="links", description="Show useful links")
-    async def links(self, interaction: discord.Interaction):
-        embed = discord.Embed(
-            title="🔗 Official Links",
-            description="Useful resources from Deep and QLYNK ecosystem.",
-            color=0x5865F2,
-        )
-        embed.set_footer(text="an app by deep")
-        await interaction.response.send_message(embed=embed, view=self._links_view())
-
-    @app_commands.command(name="pomodoro", description="Start a Pomodoro timer")
-    async def pomodoro(self, interaction: discord.Interaction, minutes: app_commands.Range[int, 1, 180] = 25):
-        await interaction.response.send_message(f"🍅 Pomodoro started for **{minutes} minutes**.")
-        start_text = (
-            f"Pomodoro started by {interaction.user.mention} for {minutes} minutes "
-            f"in {interaction.channel.mention if interaction.channel else 'a channel'}."
-        )
-        await send_master_log(self.bot, "Pomodoro Started", start_text)
-
-        dm_text = (
-            f"🍅 Your Pomodoro has started for **{minutes} minutes** in "
-            f"**{interaction.guild.name if interaction.guild else 'Discord'}**."
-        )
-        try:
-            await interaction.user.send(dm_text)
-        except Exception:
-            pass
-
-        async def finish_timer() -> None:
-            await asyncio.sleep(minutes * 60)
-            done_text = f"✅ Pomodoro ended for {interaction.user.mention}. Great work!"
-
-            if interaction.channel:
-                try:
-                    await interaction.channel.send(done_text)
-                except Exception:
-                    pass
-            try:
-                await interaction.user.send("✅ Your Pomodoro session has ended. Time for a short break!")
-            except Exception:
-                pass
-
-            await send_master_log(
-                self.bot,
-                "Pomodoro Completed",
-                f"Pomodoro completed by {interaction.user.mention} after {minutes} minutes.",
-            )
-
-        asyncio.create_task(finish_timer())
+            asyncio.create_task(close_later())
 
 
 async def setup(bot: commands.Bot):
