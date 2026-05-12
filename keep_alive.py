@@ -245,6 +245,11 @@ def server_detail_page(guild_id: int):
     return render_template_string(_HOME_HTML, initial_guild_id=guild_id)
 
 
+@app.route("/dashboard")
+def dashboard_page():
+    return render_template_string(_DASHBOARD_HTML)
+
+
 @app.route("/api/stats")
 @_api_json_guard
 def stats():
@@ -539,7 +544,7 @@ def _handle_chunk_flow(tmp_dir: Path):
 
 
 def run():
-    app.run(host="0.0.0.0", port=8080)
+    app.run(host="0.0.0.0", port=int(os.getenv("PORT", "8080")))
 
 
 # ── Utilities auth routes ──────────────────────────────────────────────────
@@ -606,7 +611,9 @@ def update_keyword(kw_id: str):
     reply = (data.get("reply") or "").strip()
     if not trigger or not reply:
         return jsonify({"error": "trigger and reply are required"}), 400
-    keywords_col.update_one({"_id": ObjectId(kw_id)}, {"$set": {"trigger": trigger, "reply": reply}})
+    result = keywords_col.update_one(_coerce_id_query(kw_id), {"$set": {"trigger": trigger, "reply": reply}})
+    if result.matched_count == 0:
+        return jsonify({"error": "Keyword not found"}), 404
     return jsonify({"ok": True})
 
 
@@ -616,7 +623,9 @@ def update_keyword(kw_id: str):
 def delete_keyword(kw_id: str):
     if not keywords_col:
         return jsonify({"error": "MONGO_URI is not configured"}), 500
-    keywords_col.delete_one({"_id": ObjectId(kw_id)})
+    result = keywords_col.delete_one(_coerce_id_query(kw_id))
+    if result.deleted_count == 0:
+        return jsonify({"error": "Keyword not found"}), 404
     return jsonify({"ok": True})
 
 
@@ -653,7 +662,9 @@ def create_tad():
 def delete_tad(tad_id: str):
     if not tad_col:
         return jsonify({"error": "MONGO_URI is not configured"}), 500
-    tad_col.delete_one({"_id": ObjectId(tad_id)})
+    result = tad_col.delete_one(_coerce_id_query(tad_id))
+    if result.deleted_count == 0:
+        return jsonify({"error": "Entry not found"}), 404
     return jsonify({"ok": True})
 
 
@@ -691,7 +702,9 @@ def create_quiz():
 def delete_quiz(quiz_id: str):
     if not quiz_col:
         return jsonify({"error": "MONGO_URI is not configured"}), 500
-    quiz_col.delete_one({"_id": ObjectId(quiz_id)})
+    result = quiz_col.delete_one(_coerce_id_query(quiz_id))
+    if result.deleted_count == 0:
+        return jsonify({"error": "Quiz not found"}), 404
     return jsonify({"ok": True})
 
 
@@ -930,7 +943,7 @@ _HOME_HTML = """
   <meta property="og:url" content="https://deepdey.onrender.com/">
   <meta name="twitter:card" content="summary_large_image">
   <meta name="twitter:title" content="Discord Top User — Discovery Dashboard">
-  <meta name="twitter:description" content="Live searchable Discord server discovery dashboard by Deep Dey - The FUTURE IITIAN.">
+  <meta name="twitter:description" content="Live searchable Discord server discovery dashboard by Deep Dey.">
   <script src="https://cdn.tailwindcss.com"></script>
   <script type="application/ld+json">
   {
@@ -943,7 +956,7 @@ _HOME_HTML = """
     "description": "A professional Discord bot platform with leaderboard tracking, music administration, games, and utilities.",
     "creator": {
       "@type": "Person",
-      "name": "Deep Dey - The FUTURE IITIAN"
+      "name": "Deep Dey"
     }
   }
   </script>
@@ -966,6 +979,7 @@ _HOME_HTML = """
       <a href="/" class="font-semibold text-lg">Discord Top User</a>
       <div class="flex flex-wrap gap-2 text-sm">
         <a href="/" class="px-3 py-2 rounded bg-slate-800 hover:bg-slate-700">Home</a>
+        <a href="/dashboard" class="px-3 py-2 rounded bg-slate-800 hover:bg-slate-700">Dashboard</a>
         <a href="/music" class="px-3 py-2 rounded bg-slate-800 hover:bg-slate-700">Music Admin</a>
         <a href="/utilities" class="px-3 py-2 rounded bg-slate-800 hover:bg-slate-700">Utilities Admin</a>
         <a href="https://deepdey.vercel.app/contact" class="px-3 py-2 rounded bg-slate-800 hover:bg-slate-700">Contact</a>
@@ -978,7 +992,7 @@ _HOME_HTML = """
         <div>
           <h1 class="text-3xl md:text-4xl font-bold">Discovery Dashboard</h1>
           <p class="text-slate-300 mt-2">Real-time public server index powered directly from Discord bot guild membership.</p>
-          <p class="text-indigo-300 text-sm mt-2">Architect: Deep Dey - The FUTURE IITIAN</p>
+          <p class="text-indigo-300 text-sm mt-2">Architect: <a class="underline hover:text-indigo-200" href="https://deepdey.vercel.app/" target="_blank" rel="noopener noreferrer">Deep Dey</a></p>
         </div>
         <a href="https://discord.com/oauth2/authorize?client_id=1503257840356163584&permissions=6835289926782017&integration_type=0&scope=bot"
            class="inline-flex items-center justify-center px-5 py-3 rounded-lg bg-indigo-600 hover:bg-indigo-500 font-semibold">Add to Discord</a>
@@ -1007,7 +1021,7 @@ _HOME_HTML = """
   </main>
   <footer class="border-t border-slate-800 py-6">
     <div class="max-w-7xl mx-auto px-4 flex flex-col md:flex-row gap-3 justify-between items-center text-sm text-slate-400">
-      <p>© <span id="year"></span> Discord Top User • Built by Deep Dey - The FUTURE IITIAN</p>
+      <p>© <span id="year"></span> Discord Top User • Built by <a class="underline hover:text-white" href="https://deepdey.vercel.app/" target="_blank" rel="noopener noreferrer">Deep Dey</a></p>
       <div class="flex gap-4">
         <a class="hover:text-white" href="https://github.com/deepdeyiitgn/Discord-Top-User">GitHub</a>
         <a class="hover:text-white" href="https://deepdey.vercel.app/insta">Instagram</a>
@@ -1096,6 +1110,76 @@ _HOME_HTML = """
 
     (async () => { await loadGuilds(); if (initialGuildId) { await openDetail(initialGuildId); } })();
   </script>
+</body>
+</html>
+"""
+
+
+_DASHBOARD_HTML = """
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Discord Top User — Dashboard</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-[#0f1115] text-slate-100 min-h-screen">
+  <header class="border-b border-slate-800 bg-[#11161f]/95 backdrop-blur sticky top-0 z-20">
+    <nav class="max-w-7xl mx-auto px-4 py-4 flex flex-wrap gap-3 items-center justify-between">
+      <a href="/" class="font-semibold text-lg">Discord Top User</a>
+      <div class="flex flex-wrap gap-2 text-sm">
+        <a href="/" class="px-3 py-2 rounded bg-slate-800 hover:bg-slate-700">Home</a>
+        <a href="/dashboard" class="px-3 py-2 rounded bg-slate-800 hover:bg-slate-700">Dashboard</a>
+        <a href="/music" class="px-3 py-2 rounded bg-slate-800 hover:bg-slate-700">Music Admin</a>
+        <a href="/utilities" class="px-3 py-2 rounded bg-slate-800 hover:bg-slate-700">Utilities Admin</a>
+        <a href="https://deepdey.vercel.app/contact" class="px-3 py-2 rounded bg-slate-800 hover:bg-slate-700">Contact</a>
+      </div>
+    </nav>
+  </header>
+
+  <main class="max-w-7xl mx-auto px-4 py-8 space-y-6">
+    <section class="rounded-2xl border border-indigo-600/40 bg-gradient-to-br from-indigo-700/20 to-slate-900 p-6">
+      <h1 class="text-3xl md:text-4xl font-bold">Bot Dashboard</h1>
+      <p class="text-slate-300 mt-2">Built by <a href="https://deepdey.vercel.app/" class="underline hover:text-white" target="_blank" rel="noopener noreferrer">Deep Dey</a>.</p>
+      <p class="text-slate-300 mt-2">Configure modules, review commands, and understand what Discord Top User does.</p>
+    </section>
+
+    <section class="grid md:grid-cols-2 gap-4">
+      <a href="/music" class="rounded-xl border border-slate-800 bg-[#151b24] p-5 hover:border-indigo-500">
+        <h2 class="text-xl font-semibold">Music Customization</h2>
+        <p class="text-slate-400 mt-2">Manage tracks, upload sources, edit artwork, and control playback content.</p>
+      </a>
+      <a href="/utilities" class="rounded-xl border border-slate-800 bg-[#151b24] p-5 hover:border-indigo-500">
+        <h2 class="text-xl font-semibold">Utilities Customization</h2>
+        <p class="text-slate-400 mt-2">Configure keywords, truth-or-dare packs, and quiz questions from the web dashboard.</p>
+      </a>
+    </section>
+
+    <section class="rounded-xl border border-slate-800 bg-[#151b24] p-5">
+      <h2 class="text-2xl font-semibold">Why this bot and what it does</h2>
+      <ul class="mt-3 list-disc list-inside text-slate-300 space-y-1">
+        <li>Tracks server activity and generates leaderboard winners automatically.</li>
+        <li>Streams and manages music with dashboard and slash command workflows.</li>
+        <li>Adds games and utility tools for daily community engagement.</li>
+        <li>Supports modular administration with telemetry-backed reliability.</li>
+      </ul>
+    </section>
+
+    <section class="rounded-xl border border-slate-800 bg-[#151b24] p-5">
+      <h2 class="text-2xl font-semibold">Commands</h2>
+      <div class="mt-3 grid md:grid-cols-2 gap-4 text-slate-300">
+        <div>
+          <h3 class="font-semibold text-slate-100">Music</h3>
+          <p>/music join, /music start, /music select, /music pause, /music resume, /music leave, /music nowplaying, /music live, /music 247 (toggle 24/7 playback mode)</p>
+        </div>
+        <div>
+          <h3 class="font-semibold text-slate-100">Setup and Utilities</h3>
+          <p>/setup, /utility, /productivity, /proxy, /game (module-specific command groups available in Discord)</p>
+        </div>
+      </div>
+    </section>
+  </main>
 </body>
 </html>
 """

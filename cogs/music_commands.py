@@ -4,6 +4,7 @@ import secrets
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import urlparse
 
 import discord
 from bson import ObjectId
@@ -33,6 +34,8 @@ INSTA_LINK = "https://deepdey.vercel.app/insta"
 DEFAULT_ARTWORK = "https://deydeep-static-files.hf.space/f/ncs"
 PASSWORD = os.getenv("PASSWORD")
 SPACE_PASSWORD = os.getenv("SPACE_PASSWORD")
+PLAYBACK_VALIDATION_DELAY_SECONDS = 0.2
+PLAYBACK_VALIDATION_MAX_WAIT_SECONDS = 2.0
 
 
 def _coerce_track_query(raw_id: str) -> dict:
@@ -653,22 +656,34 @@ class MusicCommands(commands.Cog):
                     await asyncio.sleep(1)
                     continue
 
-                before_parts = [
-                    "-reconnect 1",
-                    "-reconnect_streamed 1",
-                    "-reconnect_delay_max 5",
-                ]
+                before_parts = []
+                parsed_url = urlparse(str(track.get("file_url") or ""))
+                if parsed_url.scheme in {"http", "https"}:
+                    before_parts.extend(
+                        [
+                            "-reconnect 1",
+                            "-reconnect_streamed 1",
+                            "-reconnect_delay_max 5",
+                        ]
+                    )
                 if state.resume_offset > 0:
                     before_parts.insert(0, f"-ss {state.resume_offset}")
-                before_options = " ".join(before_parts)
+                before_options = " ".join(before_parts) if before_parts else None
 
                 try:
-                    source = discord.FFmpegPCMAudio(
-                        str(mp3_path),
-                        before_options=before_options,
-                        options="-vn",
-                    )
+                    source_kwargs = {"options": "-vn"}
+                    if before_options:
+                        source_kwargs["before_options"] = before_options
+                    source = discord.FFmpegPCMAudio(str(mp3_path), **source_kwargs)
                     state.voice_client.play(source)
+                    waited = 0.0
+                    while waited < PLAYBACK_VALIDATION_MAX_WAIT_SECONDS:
+                        if state.voice_client.is_playing() or state.voice_client.is_paused():
+                            break
+                        await asyncio.sleep(PLAYBACK_VALIDATION_DELAY_SECONDS)
+                        waited += PLAYBACK_VALIDATION_DELAY_SECONDS
+                    if not (state.voice_client.is_playing() or state.voice_client.is_paused()):
+                        raise RuntimeError(f"Voice client did not start playback for track: {track.get('title', 'Untitled Track')}")
                     state.current = track
                     state.start_time = time.time()
                     state.resume_offset = 0
@@ -733,7 +748,7 @@ class MusicCommands(commands.Cog):
             return
 
         try:
-            source = discord.FFmpegPCMAudio(str(mp3_path))
+            source = discord.FFmpegPCMAudio(str(mp3_path), options="-vn")
             state.voice_client.play(source)
             while state.voice_client and (state.voice_client.is_playing() or state.voice_client.is_paused()):
                 await asyncio.sleep(1)
