@@ -1154,7 +1154,7 @@ class GameCommands(commands.Cog):
         *,
         guild: discord.Guild,
         channel: discord.TextChannel,
-        role: discord.Role,
+        role: Optional[discord.Role],
         interval_mins: int,
     ):
         game_name, prompt_text, expected_answer = await self._build_autogame_payload(channel)
@@ -1169,7 +1169,8 @@ class GameCommands(commands.Cog):
             color=0x5865F2,
         )
         embed.set_footer(text="an app by deep")
-        game_message = await channel.send(content=role.mention, embed=embed, view=_branding_view())
+        ping_content = role.mention if role else None
+        game_message = await channel.send(content=ping_content, embed=embed, view=_branding_view())
 
         updates: list[dict] = []
         player_changes: list[tuple[str, int, str]] = []
@@ -1281,9 +1282,9 @@ class GameCommands(commands.Cog):
         async for settings in db.settings_col.find({}):
             guild_id = settings.get("guild_id")
             channel_id = settings.get("autogame_channel_id")
-            role_id = settings.get("autogame_role_id")
+            role_id = settings.get("autogame_role_id")  # may be None (silent drop)
             interval_mins = int(settings.get("autogame_interval_minutes") or 0)
-            if not guild_id or not channel_id or not role_id or interval_mins <= 0:
+            if not guild_id or not channel_id or interval_mins <= 0:
                 continue
 
             next_run = self._autogame_next_run.get(guild_id)
@@ -1298,10 +1299,10 @@ class GameCommands(commands.Cog):
                 self._autogame_next_run[guild_id] = now + (interval_mins * 60)
                 continue
             channel = guild.get_channel(channel_id)
-            role = guild.get_role(role_id)
-            if not isinstance(channel, discord.TextChannel) or not role:
+            if not isinstance(channel, discord.TextChannel):
                 self._autogame_next_run[guild_id] = now + (interval_mins * 60)
                 continue
+            role = guild.get_role(role_id) if role_id else None
             await self._run_scheduled_autogame(guild=guild, channel=channel, role=role, interval_mins=interval_mins)
             self._autogame_next_run[guild_id] = now + (interval_mins * 60)
 
@@ -1315,6 +1316,118 @@ class GameCommands(commands.Cog):
     add_group = app_commands.Group(name="add", description="Securely add game content", parent=game_group)
     send_group = app_commands.Group(name="send", description="Send managed game messages", parent=game_group)
     autoreply_group = app_commands.Group(name="autoreply", description="Manage auto-replies")
+    autogame_group = app_commands.Group(
+        name="autogame",
+        description="Control the auto-game engine",
+        default_permissions=discord.Permissions(administrator=True),
+    )
+
+    # ── /autogame subcommands ─────────────────────────────────────────────────
+
+    @autogame_group.command(name="edit", description="Edit the auto-game configuration for this server")
+    @app_commands.describe(
+        channel="New channel for auto-games (leave empty to keep current)",
+        ping_role="New role to ping (leave empty to keep current)",
+        clear_ping_role="Set to True to remove the ping role and enable silent drops",
+        interval_in_minutes="New interval in minutes (leave empty to keep current)",
+    )
+    async def autogame_edit(
+        self,
+        interaction: discord.Interaction,
+        channel: discord.TextChannel | None = None,
+        ping_role: discord.Role | None = None,
+        clear_ping_role: bool = False,
+        interval_in_minutes: app_commands.Range[int, 1, 1440] | None = None,
+    ):
+        await interaction.response.defer(thinking=True)
+        settings = await db.get_guild_settings(interaction.guild_id)
+        if not settings.get("autogame_channel_id"):
+            await interaction.followup.send("❌ No auto-game config found. Use `/setup autogame` first.", ephemeral=True)
+            return
+
+        updates: dict = {}
+        if channel is not None:
+            updates["autogame_channel_id"] = channel.id
+        if ping_role is not None:
+            updates["autogame_role_id"] = ping_role.id
+        elif clear_ping_role:
+            updates["autogame_role_id"] = None
+        if interval_in_minutes is not None:
+            updates["autogame_interval_minutes"] = int(interval_in_minutes)
+
+        if not updates:
+            await interaction.followup.send("ℹ️ No changes provided — nothing was updated.", ephemeral=True)
+            return
+
+        await db.update_guild_settings(interaction.guild_id, updates)
+
+        lines = []
+        if channel:
+            lines.append(f"Channel → {channel.mention}")
+        if ping_role:
+            lines.append(f"Ping Role → {ping_role.mention}")
+        elif clear_ping_role:
+            lines.append("Ping Role → *(cleared — silent drop)*")
+        if interval_in_minutes is not None:
+            lines.append(f"Interval → **{interval_in_minutes} minute(s)**")
+
+        await interaction.followup.send(
+            "✅ Auto-game config updated:\n" + "\n".join(lines),
+            view=_branding_view(),
+        )
+
+    @autogame_group.command(name="stop", description="Stop the auto-game engine and clear its config for this server")
+    async def autogame_stop(self, interaction: discord.Interaction):
+        await interaction.response.defer(thinking=True)
+        await db.update_guild_settings(
+            interaction.guild_id,
+            {
+                "autogame_channel_id": None,
+                "autogame_role_id": None,
+                "autogame_interval_minutes": 0,
+            },
+        )
+        self._autogame_next_run.pop(interaction.guild_id, None)
+        await interaction.followup.send("🛑 Auto-game engine stopped and config cleared.", view=_branding_view())
+
+    @autogame_group.command(name="restart", description="Restart the auto-game timer from zero for this server")
+    async def autogame_restart(self, interaction: discord.Interaction):
+        await interaction.response.defer(thinking=True)
+        settings = await db.get_guild_settings(interaction.guild_id)
+        interval_mins = int(settings.get("autogame_interval_minutes") or 0)
+        if not settings.get("autogame_channel_id") or interval_mins <= 0:
+            await interaction.followup.send("❌ No active auto-game config. Use `/setup autogame` first.", ephemeral=True)
+            return
+        self._autogame_next_run[interaction.guild_id] = time.time() + (interval_mins * 60)
+        next_ts = int(datetime.now(timezone.utc).timestamp()) + (interval_mins * 60)
+        await interaction.followup.send(
+            f"🔄 Auto-game timer reset. Next game: <t:{next_ts}:R>",
+            view=_branding_view(),
+        )
+
+    @autogame_group.command(name="force", description="Instantly drop an auto-game in the configured channel")
+    async def autogame_force(self, interaction: discord.Interaction):
+        await interaction.response.defer(thinking=True)
+        settings = await db.get_guild_settings(interaction.guild_id)
+        channel_id = settings.get("autogame_channel_id")
+        role_id = settings.get("autogame_role_id")
+        interval_mins = int(settings.get("autogame_interval_minutes") or 60)
+        if not channel_id:
+            await interaction.followup.send("❌ No auto-game channel configured. Use `/setup autogame` first.", ephemeral=True)
+            return
+        channel = interaction.guild.get_channel(channel_id)
+        if not isinstance(channel, discord.TextChannel):
+            await interaction.followup.send("❌ Configured channel not found or is not a text channel.", ephemeral=True)
+            return
+        role = interaction.guild.get_role(role_id) if role_id else None
+        await interaction.followup.send("⚡ Forcing auto-game drop now…", ephemeral=True)
+        await self._run_scheduled_autogame(
+            guild=interaction.guild,
+            channel=channel,
+            role=role,
+            interval_mins=interval_mins,
+        )
+        self._autogame_next_run[interaction.guild_id] = time.time() + (interval_mins * 60)
 
     # /game help
     @game_group.command(name="help", description="Show all available game commands")
