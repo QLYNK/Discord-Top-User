@@ -25,6 +25,7 @@ A production-focused Discord bot with:
 
 - `DISCORD_TOKEN` — Discord bot token
 - `MONGO_URI` — MongoDB connection URI
+- `PASSWORD` — Shared admin password for secure dashboards and Discord modals
 - `SPACE_PASSWORD` *(optional at runtime for `/music add` flow; entered securely via modal)*
 
 ## Local Setup
@@ -52,6 +53,8 @@ docker run -e DISCORD_TOKEN=your_token -e MONGO_URI=your_mongo_uri discord-top-u
 3. Set environment variables:
    - `DISCORD_TOKEN`
    - `MONGO_URI`
+   - `PASSWORD`
+   - `SPACE_PASSWORD`
 4. Deploy.
 
 ## Commands
@@ -72,7 +75,7 @@ docker run -e DISCORD_TOKEN=your_token -e MONGO_URI=your_mongo_uri discord-top-u
 - `/music help`
 - `/music join`
 - `/music leave`
-- `/music add <link>`
+- `/music add`
 - `/music start`
 - `/music temp <link>`
 - `/music pause`
@@ -81,13 +84,31 @@ docker run -e DISCORD_TOKEN=your_token -e MONGO_URI=your_mongo_uri discord-top-u
 - `/music live`
 - `/music 247`
 
+### Utilities
+
+- `/now`
+- `/weather <city>`
+- `/links`
+- `/pomodoro [minutes]`
+
+### Game Admin
+
+- `/game add tad`
+- `/game add quiz`
+- `/game add autoreply`
+- `/game send message <target_channel>`
+
 ## Project Structure
 
 ```text
 cogs/
   setup_commands.py
   music_commands.py
+  game_commands.py
+  utility_commands.py
 audio_manager.py
+keep_alive.py
+telemetry.py
 database.py
 main.py
 Docerfile

@@ -1,6 +1,7 @@
 """Interactive Games & Utilities Engine — Discord Cog."""
 
 import asyncio
+import os
 import secrets
 import time
 from typing import Optional
@@ -11,6 +12,7 @@ from discord import app_commands
 from discord.ext import commands, tasks
 
 from database import client as _mongo_client
+from telemetry import log_exception, send_master_log
 
 _game_db = _mongo_client["LeaderboardBotDB"]
 keywords_col = _game_db["GameKeywords"]
@@ -21,6 +23,7 @@ APP_LINK = "https://deepdey.vercel.app/"
 INSTA_LINK = "https://instagram.com/deepdey.official"
 KEYWORD_CACHE_TTL = 300  # seconds between keyword cache refreshes
 RPS_CHOICE_EMOJIS = ("✊", "✋", "✌️")
+PASSWORD = os.getenv("PASSWORD")
 
 # ── Branding view ────────────────────────────────────────────────────────────
 
@@ -252,23 +255,234 @@ class QuizView(discord.ui.View):
         return callback
 
 
+def _password_ok(raw_password: str) -> bool:
+    return bool(PASSWORD and secrets.compare_digest(raw_password, PASSWORD))
+
+
+class _AddTADModal(discord.ui.Modal, title="Add Truth or Dare"):
+    truth = discord.ui.TextInput(label="Truth", required=False, style=discord.TextStyle.paragraph, max_length=1000)
+    dare = discord.ui.TextInput(label="Dare", required=False, style=discord.TextStyle.paragraph, max_length=1000)
+    password = discord.ui.TextInput(label="Password", required=True, style=discord.TextStyle.short, max_length=200)
+
+    def __init__(self, cog: "GameCommands"):
+        super().__init__()
+        self.cog = cog
+
+    async def on_submit(self, interaction: discord.Interaction):
+        try:
+            if not _password_ok(self.password.value):
+                await interaction.response.send_message("❌ Invalid password.", ephemeral=True)
+                return
+
+            truth_text = self.truth.value.strip()
+            dare_text = self.dare.value.strip()
+            if not truth_text and not dare_text:
+                await interaction.response.send_message("❌ Add at least one Truth or Dare entry.", ephemeral=True)
+                return
+
+            entries = []
+            if truth_text:
+                entries.append({"type": "truth", "text": truth_text})
+            if dare_text:
+                entries.append({"type": "dare", "text": dare_text})
+
+            await tad_col.insert_many(entries)
+            await interaction.response.send_message("✅ Truth or Dare content saved successfully.", ephemeral=True)
+            await send_master_log(
+                self.cog.bot,
+                "Truth or Dare Added",
+                f"{interaction.user.mention} added Truth or Dare content.",
+                fields=[("Entries Added", str(len(entries)), True), ("Guild", str(interaction.guild_id), True)],
+            )
+        except Exception as exc:
+            if interaction.response.is_done():
+                await interaction.followup.send("❌ Failed to save Truth or Dare content.", ephemeral=True)
+            else:
+                await interaction.response.send_message("❌ Failed to save Truth or Dare content.", ephemeral=True)
+            await log_exception(
+                self.cog.bot,
+                title="Truth or Dare Save Failed",
+                error=exc,
+                context=f"User {interaction.user.id} in guild {interaction.guild_id}",
+            )
+
+
+class _AddQuizModal(discord.ui.Modal, title="Add Quiz Question"):
+    question = discord.ui.TextInput(label="Question", required=True, style=discord.TextStyle.paragraph, max_length=1000)
+    options = discord.ui.TextInput(label="Options (Comma-separated)", required=True, style=discord.TextStyle.paragraph, max_length=1000)
+    correct_answer = discord.ui.TextInput(label="Correct Answer", required=True, style=discord.TextStyle.short, max_length=200)
+    password = discord.ui.TextInput(label="Password", required=True, style=discord.TextStyle.short, max_length=200)
+
+    def __init__(self, cog: "GameCommands"):
+        super().__init__()
+        self.cog = cog
+
+    async def on_submit(self, interaction: discord.Interaction):
+        try:
+            if not _password_ok(self.password.value):
+                await interaction.response.send_message("❌ Invalid password.", ephemeral=True)
+                return
+
+            options = [part.strip() for part in self.options.value.split(",") if part.strip()]
+            correct = self.correct_answer.value.strip()
+            question = self.question.value.strip()
+            if len(options) < 2:
+                await interaction.response.send_message("❌ Please provide at least two options.", ephemeral=True)
+                return
+            if correct not in options:
+                await interaction.response.send_message("❌ The correct answer must match one of the provided options.", ephemeral=True)
+                return
+
+            await quiz_col.insert_one({"question": question, "options": options, "correct_answer": correct})
+            await interaction.response.send_message("✅ Quiz question saved successfully.", ephemeral=True)
+            await send_master_log(
+                self.cog.bot,
+                "Quiz Question Added",
+                f"{interaction.user.mention} added a quiz question.",
+                fields=[("Question", question[:1024], False), ("Guild", str(interaction.guild_id), True)],
+            )
+        except Exception as exc:
+            if interaction.response.is_done():
+                await interaction.followup.send("❌ Failed to save the quiz question.", ephemeral=True)
+            else:
+                await interaction.response.send_message("❌ Failed to save the quiz question.", ephemeral=True)
+            await log_exception(
+                self.cog.bot,
+                title="Quiz Save Failed",
+                error=exc,
+                context=f"User {interaction.user.id} in guild {interaction.guild_id}",
+            )
+
+
+class _AddAutoReplyModal(discord.ui.Modal, title="Add Auto Reply"):
+    keywords = discord.ui.TextInput(label="Keywords (Comma-separated)", required=True, style=discord.TextStyle.paragraph, max_length=1000)
+    reply = discord.ui.TextInput(label="Reply Message", required=True, style=discord.TextStyle.paragraph, max_length=1000)
+    password = discord.ui.TextInput(label="Password", required=True, style=discord.TextStyle.short, max_length=200)
+
+    def __init__(self, cog: "GameCommands"):
+        super().__init__()
+        self.cog = cog
+
+    async def on_submit(self, interaction: discord.Interaction):
+        try:
+            if not _password_ok(self.password.value):
+                await interaction.response.send_message("❌ Invalid password.", ephemeral=True)
+                return
+
+            parsed_keywords = [kw.strip().lower() for kw in self.keywords.value.split(",") if kw.strip()]
+            reply_msg = self.reply.value.strip()
+            if not parsed_keywords or not reply_msg:
+                await interaction.response.send_message("❌ Keywords and reply are required.", ephemeral=True)
+                return
+
+            await keywords_col.insert_many([{"trigger": kw, "reply": reply_msg} for kw in parsed_keywords])
+            await self.cog._load_keyword_cache()
+            await interaction.response.send_message("✅ Auto-reply keywords saved successfully.", ephemeral=True)
+            await send_master_log(
+                self.cog.bot,
+                "Auto-Reply Added",
+                f"{interaction.user.mention} added auto-reply keywords.",
+                fields=[
+                    ("Keyword Count", str(len(parsed_keywords)), True),
+                    ("Guild", str(interaction.guild_id), True),
+                ],
+            )
+        except Exception as exc:
+            if interaction.response.is_done():
+                await interaction.followup.send("❌ Failed to save auto-reply keywords.", ephemeral=True)
+            else:
+                await interaction.response.send_message("❌ Failed to save auto-reply keywords.", ephemeral=True)
+            await log_exception(
+                self.cog.bot,
+                title="Auto-Reply Save Failed",
+                error=exc,
+                context=f"User {interaction.user.id} in guild {interaction.guild_id}",
+            )
+
+
+class _SendMessageModal(discord.ui.Modal, title="Send Branded Message"):
+    message = discord.ui.TextInput(label="Message Content", required=True, style=discord.TextStyle.paragraph, max_length=2000)
+    password = discord.ui.TextInput(label="Password", required=True, style=discord.TextStyle.short, max_length=200)
+
+    def __init__(self, cog: "GameCommands", target_channel: discord.TextChannel):
+        super().__init__()
+        self.cog = cog
+        self.target_channel = target_channel
+
+    async def on_submit(self, interaction: discord.Interaction):
+        try:
+            if not _password_ok(self.password.value):
+                await interaction.response.send_message("❌ Invalid password.", ephemeral=True)
+                return
+
+            embed = discord.Embed(description=self.message.value.strip(), color=0x5865F2)
+            embed.set_footer(text="Sent by Deep")
+
+            view = discord.ui.View()
+            view.add_item(discord.ui.Button(label="Website", url=APP_LINK, style=discord.ButtonStyle.link))
+            view.add_item(discord.ui.Button(label="Instagram", url=INSTA_LINK, style=discord.ButtonStyle.link))
+
+            await self.target_channel.send(embed=embed, view=view)
+            await interaction.response.send_message(f"✅ Message sent to {self.target_channel.mention}.", ephemeral=True)
+            await send_master_log(
+                self.cog.bot,
+                "Game Message Sent",
+                f"{interaction.user.mention} sent a branded message.",
+                fields=[
+                    ("Target Channel", self.target_channel.mention, True),
+                    ("Guild", str(interaction.guild_id), True),
+                ],
+            )
+        except Exception as exc:
+            if interaction.response.is_done():
+                await interaction.followup.send("❌ Failed to send the branded message.", ephemeral=True)
+            else:
+                await interaction.response.send_message("❌ Failed to send the branded message.", ephemeral=True)
+            await log_exception(
+                self.cog.bot,
+                title="Branded Message Failed",
+                error=exc,
+                context=f"User {interaction.user.id} in guild {interaction.guild_id}",
+            )
+
+
 # ── Game Cog ─────────────────────────────────────────────────────────────────
 
 class GameCommands(commands.Cog):
     """Cog housing all /game subcommands and the auto-responder."""
+
+    def __init__(self, bot: commands.Bot):
+        self.bot = bot
+        self._keyword_cache: dict[str, str] = {}
+        self._cache_ts = 0.0
+        self._refresh_keyword_cache.start()
+
+    def cog_unload(self):
+        self._refresh_keyword_cache.cancel()
+
+    async def _load_keyword_cache(self):
+        docs = await keywords_col.find({}).to_list(length=None)
+        cache: dict[str, str] = {}
+        for doc in docs:
+            reply = str(doc.get("reply") or "").strip()
+            if not reply:
+                continue
+            trigger = str(doc.get("trigger") or "").strip().lower()
+            if trigger:
+                cache[trigger] = reply
+            for kw in doc.get("keywords", []):
+                text = str(kw).strip().lower()
+                if text:
+                    cache[text] = reply
+        self._keyword_cache = cache
+        self._cache_ts = time.monotonic()
 
     # ── Keyword cache ────────────────────────────────────────────────────────
 
     @tasks.loop(seconds=KEYWORD_CACHE_TTL)
     async def _refresh_keyword_cache(self):
         try:
-            docs = await keywords_col.find({}).to_list(length=None)
-            self._keyword_cache = {
-                doc["trigger"].lower(): doc["reply"]
-                for doc in docs
-                if doc.get("trigger") and doc.get("reply")
-            }
-            self._cache_ts = time.monotonic()
+            await self._load_keyword_cache()
         except Exception as exc:
             print(f"[GameCog] Keyword cache refresh failed: {exc}")
 
@@ -279,6 +493,8 @@ class GameCommands(commands.Cog):
     # ── /game group ──────────────────────────────────────────────────────────
 
     game_group = app_commands.Group(name="game", description="Games & fun commands")
+    add_group = app_commands.Group(name="add", description="Securely add game content", parent=game_group)
+    send_group = app_commands.Group(name="send", description="Send managed game messages", parent=game_group)
 
     # /game help
     @game_group.command(name="help", description="Show all available game commands")
@@ -296,6 +512,30 @@ class GameCommands(commands.Cog):
         )
         embed.set_footer(text="an app by deep")
         await interaction.response.send_message(embed=embed, view=_branding_view())
+
+    @add_group.command(name="tad", description="Add Truth or Dare entries securely")
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.checks.has_permissions(administrator=True)
+    async def game_add_tad(self, interaction: discord.Interaction):
+        await interaction.response.send_modal(_AddTADModal(self))
+
+    @add_group.command(name="quiz", description="Add quiz questions securely")
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.checks.has_permissions(administrator=True)
+    async def game_add_quiz(self, interaction: discord.Interaction):
+        await interaction.response.send_modal(_AddQuizModal(self))
+
+    @add_group.command(name="autoreply", description="Add auto-reply keywords securely")
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.checks.has_permissions(administrator=True)
+    async def game_add_autoreply(self, interaction: discord.Interaction):
+        await interaction.response.send_modal(_AddAutoReplyModal(self))
+
+    @send_group.command(name="message", description="Send a branded message to a target channel")
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.checks.has_permissions(administrator=True)
+    async def game_send_message(self, interaction: discord.Interaction, target_channel: discord.TextChannel):
+        await interaction.response.send_modal(_SendMessageModal(self, target_channel))
 
     # /game tad
     @game_group.command(name="tad", description="Get a random Truth or Dare question")

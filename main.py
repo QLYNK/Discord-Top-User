@@ -10,6 +10,7 @@ from dotenv import load_dotenv
 import database as db
 import utils
 import keep_alive
+from telemetry import log_exception, send_master_log
 
 # Load environment variables
 load_dotenv()
@@ -33,7 +34,7 @@ async def on_ready():
     print(f"✅ Logged in as {bot.user} | Ready to track!")
     
     # Load Cogs (Setup Commands + Music Engine + Game Engine)
-    for extension in ("cogs.setup_commands", "cogs.music_commands", "cogs.game_commands"):
+    for extension in ("cogs.setup_commands", "cogs.music_commands", "cogs.game_commands", "cogs.utility_commands"):
         try:
             await bot.load_extension(extension)
             print(f"✅ Loaded extension: {extension}")
@@ -54,6 +55,49 @@ async def on_ready():
         flush_buffer.start()
 
 @bot.event
+async def on_app_command_completion(interaction: discord.Interaction, command):
+    qualified_name = command.qualified_name.lower()
+    user_ref = f"{interaction.user} ({interaction.user.id})"
+    location = f"Guild {interaction.guild_id} • Channel {interaction.channel_id}"
+
+    if qualified_name in {"now", "weather", "links", "pomodoro"}:
+        await send_master_log(
+            bot,
+            "Utility Command Used",
+            f"`/{qualified_name}` used by {user_ref}.",
+            fields=[("Location", location, False)],
+        )
+
+    if (
+        qualified_name.startswith("setup")
+        or qualified_name.startswith("game add")
+        or qualified_name.startswith("game send message")
+        or qualified_name.startswith("music add")
+    ):
+        await send_master_log(
+            bot,
+            "Admin Action Executed",
+            f"`/{qualified_name}` executed by {user_ref}.",
+            fields=[("Location", location, False)],
+        )
+
+
+@bot.event
+async def on_voice_state_update(member: discord.Member, before: discord.VoiceState, after: discord.VoiceState):
+    if member.bot:
+        return
+    if before.channel is None and after.channel is not None:
+        await send_master_log(
+            bot,
+            "Voice Channel Join",
+            f"{member.mention} joined voice channel **{after.channel.name}**.",
+            fields=[
+                ("Guild", member.guild.name, True),
+                ("User ID", str(member.id), True),
+            ],
+        )
+
+@bot.event
 async def on_message(message):
     # Bot ke apne messages aur DMs ignore karo
     if message.author.bot or not message.guild:
@@ -70,6 +114,32 @@ async def on_message(message):
     message_buffer[g_id][u_id] = message_buffer[g_id].get(u_id, 0) + 1
     
     await bot.process_commands(message)
+
+
+async def _tree_on_error(interaction: discord.Interaction, error: Exception):
+    user_message = "An unexpected error occurred while running this command."
+    try:
+        if interaction.response.is_done():
+            await interaction.followup.send(user_message, ephemeral=True)
+        else:
+            await interaction.response.send_message(user_message, ephemeral=True)
+    except Exception:
+        pass
+
+    cmd_name = interaction.command.qualified_name if interaction.command else "unknown"
+    context = (
+        f"Command: /{cmd_name} | User: {interaction.user} ({interaction.user.id}) | "
+        f"Guild: {interaction.guild_id} | Channel: {interaction.channel_id}"
+    )
+    await log_exception(
+        bot,
+        title="Slash Command Error",
+        error=error,
+        context=context,
+    )
+
+
+bot.tree.on_error = _tree_on_error
 
 @tasks.loop(minutes=1)
 async def update_api_stats():

@@ -1,4 +1,5 @@
 import asyncio
+import os
 import secrets
 import time
 from datetime import datetime, timezone
@@ -19,6 +20,8 @@ from audio_manager import (
     upload_to_cdn,
 )
 from database import client as _mongo_client
+from telemetry import log_exception, send_master_log
+from utils.audio_manager import cleanup_path, convert_to_96k_mp3, extract_from_url
 
 _music_db = _mongo_client["LeaderboardBotDB"]
 music_col = _music_db["MusicTracks"]
@@ -27,6 +30,8 @@ music_session_col = _music_db["MusicSessions"]
 APP_LINK = "https://deepdey.vercel.app/"
 INSTA_LINK = "https://instagram.com/deepdey.official"
 DEFAULT_ARTWORK = "https://deydeep-static-files.hf.space/f/ncs"
+PASSWORD = os.getenv("PASSWORD")
+SPACE_PASSWORD = os.getenv("SPACE_PASSWORD")
 
 
 def _coerce_track_query(raw_id: str) -> dict:
@@ -128,6 +133,75 @@ class _LiveDashboardView(discord.ui.View):
         if state.voice_client and (state.voice_client.is_playing() or state.voice_client.is_paused()):
             state.voice_client.stop()
         await interaction.response.defer()
+
+
+class _MusicAddModal(discord.ui.Modal, title="Add Music Track"):
+    link = discord.ui.TextInput(label="Link", placeholder="Enter audio/video URL", required=True, max_length=500)
+    track_title = discord.ui.TextInput(label="Title", placeholder="Optional custom title", required=False, max_length=120)
+    artwork = discord.ui.TextInput(label="Artwork", placeholder="Optional artwork URL", required=False, max_length=500)
+    password = discord.ui.TextInput(label="Password", required=True, style=discord.TextStyle.short, max_length=200)
+
+    def __init__(self, cog: "MusicCommands") -> None:
+        super().__init__()
+        self.cog = cog
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        if not PASSWORD:
+            await interaction.response.send_message("❌ PASSWORD is not configured.", ephemeral=True)
+            return
+        if not SPACE_PASSWORD:
+            await interaction.response.send_message("❌ SPACE_PASSWORD is not configured.", ephemeral=True)
+            return
+        if not secrets.compare_digest(self.password.value, PASSWORD):
+            await interaction.response.send_message("❌ Invalid password.", ephemeral=True)
+            return
+
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        source_file = None
+        final_mp3 = None
+        try:
+            source_file, extracted_title, extracted_artwork = await extract_from_url(self.link.value.strip())
+            title = self.track_title.value.strip() or extracted_title or "Untitled Track"
+            artwork_url = self.artwork.value.strip() or extracted_artwork or DEFAULT_ARTWORK
+            final_mp3 = await convert_to_96k_mp3(source_file, output_name=secrets.token_hex(8))
+            cdn_url = await upload_to_cdn(final_mp3, SPACE_PASSWORD, title)
+            if not cdn_url:
+                raise RuntimeError("CDN upload failed")
+
+            payload = {
+                "title": title,
+                "file_url": cdn_url,
+                "artwork_url": artwork_url,
+                "created_at": datetime.now(timezone.utc),
+            }
+            inserted = await music_col.insert_one(payload)
+            await interaction.followup.send(
+                f"✅ Track added successfully.\n**Title:** {title}\n**ID:** `{inserted.inserted_id}`",
+                ephemeral=True,
+            )
+            await send_master_log(
+                self.cog.bot,
+                "Music Track Added",
+                f"{interaction.user.mention} added a new music track.",
+                fields=[
+                    ("Title", title, False),
+                    ("Track ID", str(inserted.inserted_id), True),
+                    ("Guild", str(interaction.guild_id), True),
+                ],
+            )
+        except Exception as exc:
+            await interaction.followup.send("❌ Failed to process and upload the track.", ephemeral=True)
+            await log_exception(
+                self.cog.bot,
+                title="Music Add Failed",
+                error=exc,
+                context=f"User {interaction.user.id} in guild {interaction.guild_id}",
+            )
+        finally:
+            if source_file:
+                cleanup_path(source_file)
+            if final_mp3:
+                cleanup_path(final_mp3)
 
 
 class MusicCommands(commands.Cog):
@@ -308,6 +382,12 @@ class MusicCommands(commands.Cog):
         embed.set_footer(text="an app by deep")
         await interaction.response.send_message(embed=embed, view=_base_view())
 
+    @music_group.command(name="add", description="Add a track using secure modal upload flow")
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.checks.has_permissions(administrator=True)
+    async def music_add(self, interaction: discord.Interaction) -> None:
+        await interaction.response.send_modal(_MusicAddModal(self))
+
     @music_select.autocomplete("search_query")
     async def music_select_autocomplete(self, interaction: discord.Interaction, current: str):
         query = (current or "").strip()
@@ -448,15 +528,20 @@ class MusicCommands(commands.Cog):
                     await asyncio.sleep(1)
                     continue
 
-                before_options = None
+                before_parts = [
+                    "-reconnect 1",
+                    "-reconnect_streamed 1",
+                    "-reconnect_delay_max 5",
+                ]
                 if state.resume_offset > 0:
-                    before_options = f"-ss {state.resume_offset}"
+                    before_parts.insert(0, f"-ss {state.resume_offset}")
+                before_options = " ".join(before_parts)
 
                 try:
                     source = discord.FFmpegPCMAudio(
                         str(mp3_path),
                         before_options=before_options,
-                        options="-vn -loglevel warning",
+                        options="-vn",
                     )
                     state.voice_client.play(source)
                     state.current = track
