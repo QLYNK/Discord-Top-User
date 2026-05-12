@@ -216,7 +216,6 @@ class PomodoroProfileModal(discord.ui.Modal):
                 },
                 "$setOnInsert": {
                     "lifetime_focus_minutes": 0.0,
-                    "completed_focus_cycles": 0,
                 },
             },
             upsert=True,
@@ -377,7 +376,6 @@ class ProductivityCommands(commands.Cog):
             "short_break_minutes": 5,
             "long_break_minutes": 15,
             "cycles_before_long_break": 4,
-            "completed_focus_cycles": 0,
             "lifetime_focus_minutes": 0.0,
             "updated_at": _utc_now(),
         }
@@ -485,18 +483,14 @@ class ProductivityCommands(commands.Cog):
 
         focused_minutes = focused_seconds / 60
         profile = await self._get_or_create_profile(user_id)
-        cycles_before_long = max(1, int(profile.get("cycles_before_long_break", 4)))
-        completed_cycles = int(profile.get("completed_focus_cycles", 0)) + 1
-        use_long_break = (completed_cycles % cycles_before_long) == 0
-        break_minutes = int(profile.get("long_break_minutes", 15)) if use_long_break else int(profile.get("short_break_minutes", 5))
-        break_label = "Long Break" if use_long_break else "Short Break"
+        break_minutes = int(profile.get("short_break_minutes", 5))
+        break_label = "Short Break"
 
         await pomodoro_profiles_col.update_one(
             {"user_id": user_id},
             {
                 "$inc": {
                     "lifetime_focus_minutes": focused_minutes,
-                    "completed_focus_cycles": 1,
                 },
                 "$set": {"updated_at": _utc_now()},
             },

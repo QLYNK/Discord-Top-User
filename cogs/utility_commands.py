@@ -152,6 +152,7 @@ class UtilityCommands(commands.Cog):
         *,
         activity_type: str,
         details: str,
+        jump_url: str | None = None,
         fields: list[tuple[str, str, bool]] | None = None,
     ) -> None:
         await send_activity_log(
@@ -161,7 +162,8 @@ class UtilityCommands(commands.Cog):
             module="Utilities",
             guild=interaction.guild,
             user=interaction.user,
-            jump_url=interaction.channel.jump_url if isinstance(interaction.channel, discord.TextChannel) else None,
+            jump_url=jump_url
+            or (interaction.channel.jump_url if isinstance(interaction.channel, discord.TextChannel) else None),
             fields=fields,
         )
         await send_guild_module_log(
@@ -300,9 +302,31 @@ class UtilityCommands(commands.Cog):
             temp = current.get("temperature", "N/A")
             code = current.get("weathercode", "N/A")
             wind = current.get("windspeed", "N/A")
+            condition_map = {
+                0: "Clear",
+                1: "Mainly Clear",
+                2: "Partly Cloudy",
+                3: "Overcast",
+                45: "Fog",
+                48: "Depositing Rime Fog",
+                51: "Light Drizzle",
+                53: "Moderate Drizzle",
+                55: "Dense Drizzle",
+                61: "Slight Rain",
+                63: "Moderate Rain",
+                65: "Heavy Rain",
+                71: "Slight Snow",
+                73: "Moderate Snow",
+                75: "Heavy Snow",
+                80: "Rain Showers",
+                81: "Rain Showers",
+                82: "Violent Rain Showers",
+                95: "Thunderstorm",
+            }
+            condition = condition_map.get(code, f"Weather Code {code}")
             embed.add_field(
                 name=location_name,
-                value=f"🌡️ **{temp}°C** | Code: **{code}**\n💨 Wind: **{wind} km/h**",
+                value=f"🌡️ **{temp}°C** | **{condition}**\n💨 Wind: **{wind} km/h**",
                 inline=True,
             )
 

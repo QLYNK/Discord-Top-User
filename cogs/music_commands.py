@@ -20,7 +20,8 @@ from audio_manager import (
     upload_to_cdn,
 )
 from database import client as _mongo_client
-from telemetry import log_exception, send_master_log
+import database as db
+from telemetry import log_exception, send_activity_log, send_guild_module_log, send_master_log
 from utils.audio_manager import cleanup_path, convert_to_96k_mp3, extract_from_url
 
 _music_db = _mongo_client["LeaderboardBotDB"]
@@ -228,6 +229,35 @@ class MusicCommands(commands.Cog):
             self._states[guild_id] = GuildMusicState()
         return self._states[guild_id]
 
+    async def _emit_music_logs(
+        self,
+        *,
+        guild: discord.Guild | None,
+        user: discord.abc.User | None,
+        activity_type: str,
+        details: str,
+        fields: list[tuple[str, str, bool]] | None = None,
+        jump_url: str | None = None,
+    ) -> None:
+        await send_activity_log(
+            self.bot,
+            activity_type=activity_type,
+            details=details,
+            module="Music",
+            guild=guild,
+            user=user,
+            jump_url=jump_url,
+            fields=fields,
+        )
+        await send_guild_module_log(
+            self.bot,
+            guild=guild,
+            module="music",
+            title=f"Music • {activity_type}",
+            description=details,
+            fields=fields,
+        )
+
     @tasks.loop(minutes=5)
     async def _cache_monitor(self) -> None:
         if get_dir_size() > MAX_CACHE_BYTES:
@@ -341,6 +371,13 @@ class MusicCommands(commands.Cog):
         embed.set_footer(text="an app by deep")
         await interaction.response.send_message(embed=embed, view=_base_view())
 
+    @music_group.command(name="logs", description="Set the dedicated music logs channel")
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.checks.has_permissions(administrator=True)
+    async def music_logs(self, interaction: discord.Interaction, channel: discord.TextChannel) -> None:
+        await db.update_guild_settings(interaction.guild_id, {"music_logs_channel_id": channel.id})
+        await interaction.response.send_message(f"Music logs channel set to {channel.mention}.")
+
     @music_group.command(name="select", description="Select a saved track and stream it instantly")
     async def music_select(self, interaction: discord.Interaction, search_query: str) -> None:
         if not interaction.user.voice or not interaction.user.voice.channel:
@@ -423,6 +460,14 @@ class MusicCommands(commands.Cog):
         embed = discord.Embed(title="✅ Joined Voice Channel", description=f"Connected to **{channel.name}**.", color=0x1DB954)
         embed.set_footer(text="an app by deep")
         await interaction.response.send_message(embed=embed, view=_base_view())
+        await self._emit_music_logs(
+            guild=interaction.guild,
+            user=interaction.user,
+            activity_type="Voice Channel Join",
+            details=f"Joined voice channel: {channel.name}.",
+            fields=[("Voice Channel", channel.name, True)],
+            jump_url=interaction.channel.jump_url if isinstance(interaction.channel, discord.TextChannel) else None,
+        )
 
     @music_group.command(name="leave", description="Leave VC and clear the queue")
     async def music_leave(self, interaction: discord.Interaction) -> None:
@@ -548,6 +593,14 @@ class MusicCommands(commands.Cog):
                     state.start_time = time.time()
                     state.resume_offset = 0
                     await self.persist_state(guild_id)
+                    guild = self.bot.get_guild(guild_id)
+                    await self._emit_music_logs(
+                        guild=guild,
+                        user=self.bot.user,
+                        activity_type="Track Played",
+                        details=f"Track started: {track.get('title', 'Untitled Track')}.",
+                        fields=[("Track", track.get("title", "Untitled Track"), False)],
+                    )
                 except Exception as exc:
                     print(f"[Music] Playback error for {track.get('title', 'unknown')}: {type(exc).__name__}")
                     await asyncio.sleep(1)

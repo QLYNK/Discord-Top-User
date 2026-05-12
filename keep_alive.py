@@ -42,6 +42,31 @@ UPLOAD_ID_PATTERN = r"^[a-fA-F0-9-]{8,64}$"
 MAX_CHUNKS = 4096
 CHUNK_SIZE_BYTES = 10 * 1024 * 1024
 _UPLOAD_SESSION_KEYS: dict[str, str] = {}
+_TELEMETRY_HANDLER = None
+
+
+def register_telemetry_handler(handler):
+    global _TELEMETRY_HANDLER
+    _TELEMETRY_HANDLER = handler
+
+
+def _emit_dashboard_telemetry(activity_type: str, details: str, *, fields: list[tuple[str, str, bool]] | None = None):
+    if not _TELEMETRY_HANDLER:
+        return
+    try:
+        _TELEMETRY_HANDLER(
+            {
+                "module": "Web Dashboard",
+                "activity_type": activity_type,
+                "details": details,
+                "fields": fields or [],
+                "path": request.path,
+                "method": request.method,
+                "ip": request.remote_addr or "Unknown",
+            }
+        )
+    except Exception:
+        pass
 
 
 def _run_async(coro):
@@ -99,6 +124,15 @@ def _api_json_guard(func):
             return func(*args, **kwargs)
         except Exception as exc:
             app.logger.exception("API request failed: %s", exc)
+            _emit_dashboard_telemetry(
+                "API Error",
+                "Dashboard API request failed.",
+                fields=[
+                    ("Endpoint", request.path, True),
+                    ("Method", request.method, True),
+                    ("Error", type(exc).__name__, False),
+                ],
+            )
             return jsonify({"error": "Internal server error"}), 500
 
     return wrapper
@@ -126,6 +160,7 @@ def music_login():
         submitted = request.form.get("password", "")
         if PASSWORD and secrets.compare_digest(submitted, PASSWORD):
             session["music_auth"] = True
+            _emit_dashboard_telemetry("Dashboard Login", "Music dashboard login successful.")
             return redirect("/music")
         return render_template_string(_LOGIN_HTML, error="Invalid password")
     return render_template_string(_LOGIN_HTML, error=None)
@@ -348,6 +383,7 @@ def utilities_login():
         submitted = request.form.get("password", "")
         if PASSWORD and secrets.compare_digest(submitted, PASSWORD):
             session["utilities_auth"] = True
+            _emit_dashboard_telemetry("Dashboard Login", "Utilities dashboard login successful.")
             return redirect("/utilities")
         return render_template_string(_UTILITIES_LOGIN_HTML, error="Invalid password")
     return render_template_string(_UTILITIES_LOGIN_HTML, error=None)
