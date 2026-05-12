@@ -4,6 +4,7 @@ import secrets
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import urlparse
 
 import discord
 from bson import ObjectId
@@ -653,22 +654,29 @@ class MusicCommands(commands.Cog):
                     await asyncio.sleep(1)
                     continue
 
-                before_parts = [
-                    "-reconnect 1",
-                    "-reconnect_streamed 1",
-                    "-reconnect_delay_max 5",
-                ]
+                before_parts = []
+                parsed_url = urlparse(str(track.get("file_url") or ""))
+                if parsed_url.scheme in {"http", "https"}:
+                    before_parts.extend(
+                        [
+                            "-reconnect 1",
+                            "-reconnect_streamed 1",
+                            "-reconnect_delay_max 5",
+                        ]
+                    )
                 if state.resume_offset > 0:
                     before_parts.insert(0, f"-ss {state.resume_offset}")
-                before_options = " ".join(before_parts)
+                before_options = " ".join(before_parts) if before_parts else None
 
                 try:
-                    source = discord.FFmpegPCMAudio(
-                        str(mp3_path),
-                        before_options=before_options,
-                        options="-vn",
-                    )
+                    source_kwargs = {"options": "-vn"}
+                    if before_options:
+                        source_kwargs["before_options"] = before_options
+                    source = discord.FFmpegPCMAudio(str(mp3_path), **source_kwargs)
                     state.voice_client.play(source)
+                    await asyncio.sleep(0.35)
+                    if not (state.voice_client.is_playing() or state.voice_client.is_paused()):
+                        raise RuntimeError("Voice client did not start playback")
                     state.current = track
                     state.start_time = time.time()
                     state.resume_offset = 0
@@ -733,7 +741,7 @@ class MusicCommands(commands.Cog):
             return
 
         try:
-            source = discord.FFmpegPCMAudio(str(mp3_path))
+            source = discord.FFmpegPCMAudio(str(mp3_path), options="-vn")
             state.voice_client.play(source)
             while state.voice_client and (state.voice_client.is_playing() or state.voice_client.is_paused()):
                 await asyncio.sleep(1)
