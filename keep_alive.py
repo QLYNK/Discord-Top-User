@@ -1171,7 +1171,7 @@ _DASHBOARD_HTML = """
       <div class="mt-3 grid md:grid-cols-2 gap-4 text-slate-300">
         <div>
           <h3 class="font-semibold text-slate-100">Music</h3>
-          <p>/music join, /music start, /music select, /music pause, /music resume, /music leave, /music nowplaying, /music live, /music 247</p>
+          <p>/music join, /music start, /music select, /music pause, /music resume, /music leave, /music nowplaying, /music live, /music 247 (toggle 24/7 playback mode)</p>
         </div>
         <div>
           <h3 class="font-semibold text-slate-100">Setup and Utilities</h3>
