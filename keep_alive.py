@@ -1133,6 +1133,7 @@ _DASHBOARD_HTML = """
         <a href="/dashboard" class="px-3 py-2 rounded bg-slate-800 hover:bg-slate-700">Dashboard</a>
         <a href="/music" class="px-3 py-2 rounded bg-slate-800 hover:bg-slate-700">Music Admin</a>
         <a href="/utilities" class="px-3 py-2 rounded bg-slate-800 hover:bg-slate-700">Utilities Admin</a>
+        <a href="https://deepdey.vercel.app/contact" class="px-3 py-2 rounded bg-slate-800 hover:bg-slate-700">Contact</a>
       </div>
     </nav>
   </header>

@@ -34,6 +34,7 @@ INSTA_LINK = "https://deepdey.vercel.app/insta"
 DEFAULT_ARTWORK = "https://deydeep-static-files.hf.space/f/ncs"
 PASSWORD = os.getenv("PASSWORD")
 SPACE_PASSWORD = os.getenv("SPACE_PASSWORD")
+PLAYBACK_VALIDATION_DELAY_SECONDS = 0.35
 
 
 def _coerce_track_query(raw_id: str) -> dict:
@@ -674,7 +675,7 @@ class MusicCommands(commands.Cog):
                         source_kwargs["before_options"] = before_options
                     source = discord.FFmpegPCMAudio(str(mp3_path), **source_kwargs)
                     state.voice_client.play(source)
-                    await asyncio.sleep(0.35)
+                    await asyncio.sleep(PLAYBACK_VALIDATION_DELAY_SECONDS)
                     if not (state.voice_client.is_playing() or state.voice_client.is_paused()):
                         raise RuntimeError("Voice client did not start playback")
                     state.current = track
