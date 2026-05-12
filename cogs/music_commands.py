@@ -677,7 +677,7 @@ class MusicCommands(commands.Cog):
                     state.voice_client.play(source)
                     await asyncio.sleep(PLAYBACK_VALIDATION_DELAY_SECONDS)
                     if not (state.voice_client.is_playing() or state.voice_client.is_paused()):
-                        raise RuntimeError("Voice client did not start playback")
+                        raise RuntimeError(f"Voice client did not start playback for track: {track.get('title', 'Untitled Track')}")
                     state.current = track
                     state.start_time = time.time()
                     state.resume_offset = 0
