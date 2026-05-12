@@ -12,6 +12,7 @@ import database as db
 import utils
 import keep_alive
 from telemetry import log_exception, send_activity_log
+from utils.branding_view import create_branding_view, install_global_branding_enforcer
 
 # Load environment variables
 load_dotenv()
@@ -22,6 +23,7 @@ intents = discord.Intents.default()
 intents.message_content = True
 intents.members = True
 bot = commands.Bot(command_prefix="!", intents=intents, help_command=None)
+install_global_branding_enforcer()
 
 # Store start time for uptime tracking
 # Store start time for uptime tracking
@@ -63,7 +65,14 @@ async def on_ready():
     print(f"✅ Logged in as {bot.user} | Ready to track!")
     
     # Load Cogs (Setup Commands + Music Engine + Game Engine)
-    for extension in ("cogs.setup_commands", "cogs.music_commands", "cogs.game_commands", "cogs.utility_commands", "cogs.productivity_commands"):
+    for extension in (
+        "cogs.setup_commands",
+        "cogs.music_commands",
+        "cogs.game_commands",
+        "cogs.utility_commands",
+        "cogs.productivity_commands",
+        "cogs.proxy",
+    ):
         try:
             await bot.load_extension(extension)
             print(f"✅ Loaded extension: {extension}")
@@ -273,9 +282,7 @@ async def process_leaderboard(guild: discord.Guild, settings: dict):
     embed.set_footer(text="an app by deep", icon_url=bot.user.avatar.url if bot.user.avatar else None)
 
     # 5. Buttons (Action Row)
-    view = discord.ui.View()
-    view.add_item(discord.ui.Button(label="Follow owner", url="https://instagram.com/deepdey.official", style=discord.ButtonStyle.link))
-    view.add_item(discord.ui.Button(label="Developer Site", url="https://deepdey.vercel.app/", style=discord.ButtonStyle.link))
+    view = create_branding_view()
 
     # 6. Final Message bhejna
     role_mention = role.mention if role else "Top Members"

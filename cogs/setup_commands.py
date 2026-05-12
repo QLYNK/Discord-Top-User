@@ -40,8 +40,8 @@ class SetupCommands(commands.Cog):
     @staticmethod
     def _branding_view() -> discord.ui.View:
         view = discord.ui.View()
-        view.add_item(discord.ui.Button(label="an app by deep", url="https://deepdey.vercel.app/", style=discord.ButtonStyle.link))
-        view.add_item(discord.ui.Button(label="Instagram", url="https://instagram.com/deepdey.official", style=discord.ButtonStyle.link))
+        view.add_item(discord.ui.Button(label="Deep Dey", url="https://deepdey.vercel.app/", style=discord.ButtonStyle.link))
+        view.add_item(discord.ui.Button(label="Instagram", url="https://deepdey.vercel.app/insta", style=discord.ButtonStyle.link))
         return view
 
     # Create the /setup slash command group

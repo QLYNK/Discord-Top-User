@@ -73,7 +73,7 @@ def generate_html_file(data: list, guild_name: str, guild_icon_url: str) -> disc
             </tbody>
         </table>
         <div class="footer">
-            <p><a href="https://deepdey.vercel.app/" target="_blank">an app by deep</a> | <a href="https://instagram.com/deepdey.official" target="_blank">Follow owner</a></p>
+            <p><a href="https://deepdey.vercel.app/" target="_blank">Deep Dey</a> | <a href="https://deepdey.vercel.app/insta" target="_blank">Instagram</a></p>
         </div>
     </div>
 </body>

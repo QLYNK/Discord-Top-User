@@ -12,7 +12,7 @@ import database as db
 from telemetry import send_activity_log, send_guild_module_log
 
 APP_LINK = "https://deepdey.vercel.app/"
-INSTA_LINK = "https://instagram.com/deepdey.official"
+INSTA_LINK = "https://deepdey.vercel.app/insta"
 GITHUB_REPO_LINK = "https://github.com/deepdeyiitgn/Discord-Top-User"
 GITHUB_PROFILE_LINK = "https://github.com/deepdeyiitgn/"
 HOME_SERVER_LINK = "https://discord.com/invite/t6ZKNw556n"
