@@ -171,7 +171,7 @@ def _require_music_auth(func):
     @wraps(func)
     def wrapper(*args, **kwargs):
         if not PASSWORD:
-            return jsonify({"error": "PASSWORD env var is not configured"}), 500
+            return jsonify({"error": "PASSWORD env var is not configured"}), 503
         if not session.get("music_auth"):
             if request.path.startswith("/api/"):
                 return jsonify({"error": "Unauthorized"}), 401
@@ -185,7 +185,7 @@ def _require_utilities_auth(func):
     @wraps(func)
     def wrapper(*args, **kwargs):
         if not PASSWORD:
-            return jsonify({"error": "PASSWORD env var is not configured"}), 500
+            return jsonify({"error": "PASSWORD env var is not configured"}), 503
         if not session.get("utilities_auth"):
             if request.path.startswith("/api/"):
                 return jsonify({"error": "Unauthorized"}), 401
@@ -355,7 +355,7 @@ def music_dashboard():
 @_require_music_auth
 def list_tracks():
     if not music_col:
-        return jsonify({"error": "MONGO_URI is not configured"}), 500
+        return jsonify({"error": "MONGO_URI is not configured"}), 503
     try:
         limit = max(1, min(200, int(request.args.get("limit", 100))))
         skip = max(0, int(request.args.get("skip", 0)))
@@ -376,7 +376,7 @@ def list_tracks():
 @_require_music_auth
 def edit_track(track_id: str):
     if not music_col:
-        return jsonify({"error": "MONGO_URI is not configured"}), 500
+        return jsonify({"error": "MONGO_URI is not configured"}), 503
 
     data = request.get_json(silent=True) or {}
     title = (data.get("title") or "").strip()
@@ -399,7 +399,7 @@ def edit_track(track_id: str):
 @_require_music_auth
 def edit_track_post():
     if not music_col:
-        return jsonify({"error": "MONGO_URI is not configured"}), 500
+        return jsonify({"error": "MONGO_URI is not configured"}), 503
 
     data = request.get_json(silent=True) or {}
     track_id = (data.get("id") or data.get("track_id") or "").strip()
@@ -425,7 +425,7 @@ def edit_track_post():
 @_require_music_auth
 def delete_track(track_id: str):
     if not music_col:
-        return jsonify({"error": "MONGO_URI is not configured"}), 500
+        return jsonify({"error": "MONGO_URI is not configured"}), 503
 
     result = music_col.delete_one(_coerce_id_query(track_id))
     if result.deleted_count == 0:
@@ -438,9 +438,9 @@ def delete_track(track_id: str):
 @_require_music_auth
 def process_music():
     if not music_col:
-        return jsonify({"error": "MONGO_URI is not configured"}), 500
+        return jsonify({"error": "MONGO_URI is not configured"}), 503
     if not SPACE_PASSWORD:
-        return jsonify({"error": "SPACE_PASSWORD is not configured"}), 500
+        return jsonify({"error": "SPACE_PASSWORD is not configured"}), 503
 
     tmp_dir = Path("./tmp")
     tmp_dir.mkdir(parents=True, exist_ok=True)
@@ -580,7 +580,7 @@ def utilities_dashboard():
 @_require_utilities_auth
 def list_keywords():
     if not keywords_col:
-        return jsonify({"error": "MONGO_URI is not configured"}), 500
+        return jsonify({"error": "MONGO_URI is not configured"}), 503
     docs = list(keywords_col.find({}, {"trigger": 1, "reply": 1}))
     return jsonify({"keywords": [{"id": str(d["_id"]), "trigger": d.get("trigger", ""), "reply": d.get("reply", "")} for d in docs]})
 
@@ -590,7 +590,7 @@ def list_keywords():
 @_require_utilities_auth
 def create_keyword():
     if not keywords_col:
-        return jsonify({"error": "MONGO_URI is not configured"}), 500
+        return jsonify({"error": "MONGO_URI is not configured"}), 503
     data = request.get_json(silent=True) or {}
     trigger = (data.get("trigger") or "").strip().lower()
     reply = (data.get("reply") or "").strip()
@@ -605,7 +605,7 @@ def create_keyword():
 @_require_utilities_auth
 def update_keyword(kw_id: str):
     if not keywords_col:
-        return jsonify({"error": "MONGO_URI is not configured"}), 500
+        return jsonify({"error": "MONGO_URI is not configured"}), 503
     data = request.get_json(silent=True) or {}
     trigger = (data.get("trigger") or "").strip().lower()
     reply = (data.get("reply") or "").strip()
@@ -622,7 +622,7 @@ def update_keyword(kw_id: str):
 @_require_utilities_auth
 def delete_keyword(kw_id: str):
     if not keywords_col:
-        return jsonify({"error": "MONGO_URI is not configured"}), 500
+        return jsonify({"error": "MONGO_URI is not configured"}), 503
     result = keywords_col.delete_one(_coerce_id_query(kw_id))
     if result.deleted_count == 0:
         return jsonify({"error": "Keyword not found"}), 404
@@ -636,7 +636,7 @@ def delete_keyword(kw_id: str):
 @_require_utilities_auth
 def list_tad():
     if not tad_col:
-        return jsonify({"error": "MONGO_URI is not configured"}), 500
+        return jsonify({"error": "MONGO_URI is not configured"}), 503
     docs = list(tad_col.find({}, {"type": 1, "text": 1}))
     return jsonify({"tad": [{"id": str(d["_id"]), "type": d.get("type", ""), "text": d.get("text", "")} for d in docs]})
 
@@ -646,7 +646,7 @@ def list_tad():
 @_require_utilities_auth
 def create_tad():
     if not tad_col:
-        return jsonify({"error": "MONGO_URI is not configured"}), 500
+        return jsonify({"error": "MONGO_URI is not configured"}), 503
     data = request.get_json(silent=True) or {}
     tad_type = (data.get("type") or "").strip().lower()
     text = (data.get("text") or "").strip()
@@ -661,7 +661,7 @@ def create_tad():
 @_require_utilities_auth
 def delete_tad(tad_id: str):
     if not tad_col:
-        return jsonify({"error": "MONGO_URI is not configured"}), 500
+        return jsonify({"error": "MONGO_URI is not configured"}), 503
     result = tad_col.delete_one(_coerce_id_query(tad_id))
     if result.deleted_count == 0:
         return jsonify({"error": "Entry not found"}), 404
@@ -675,7 +675,7 @@ def delete_tad(tad_id: str):
 @_require_utilities_auth
 def list_quiz():
     if not quiz_col:
-        return jsonify({"error": "MONGO_URI is not configured"}), 500
+        return jsonify({"error": "MONGO_URI is not configured"}), 503
     docs = list(quiz_col.find({}, {"question": 1, "options": 1, "correct_answer": 1}))
     return jsonify({"quiz": [{"id": str(d["_id"]), "question": d.get("question", ""), "options": d.get("options", []), "correct_answer": d.get("correct_answer", "")} for d in docs]})
 
@@ -685,7 +685,7 @@ def list_quiz():
 @_require_utilities_auth
 def create_quiz():
     if not quiz_col:
-        return jsonify({"error": "MONGO_URI is not configured"}), 500
+        return jsonify({"error": "MONGO_URI is not configured"}), 503
     data = request.get_json(silent=True) or {}
     question = (data.get("question") or "").strip()
     options = [str(o).strip() for o in (data.get("options") or []) if str(o).strip()]
@@ -701,7 +701,7 @@ def create_quiz():
 @_require_utilities_auth
 def delete_quiz(quiz_id: str):
     if not quiz_col:
-        return jsonify({"error": "MONGO_URI is not configured"}), 500
+        return jsonify({"error": "MONGO_URI is not configured"}), 503
     result = quiz_col.delete_one(_coerce_id_query(quiz_id))
     if result.deleted_count == 0:
         return jsonify({"error": "Quiz not found"}), 404
