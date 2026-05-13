@@ -6,7 +6,7 @@
 ![CI](https://img.shields.io/github/actions/workflow/status/deepdeyiitgn/Discord-Top-User/main.yml?label=CI)
 ![MongoDB](https://img.shields.io/badge/Database-MongoDB-47A248?logo=mongodb&logoColor=white)
 
-Production-ready Discord ecosystem by **Deep Dey - The FUTURE IITIAN** with modular cogs for leaderboard automation, music administration, game engines, utility workflows, telemetry, and web dashboard tooling.
+Production-ready Discord ecosystem by **[Deep Dey](https://deepdey.vercel.app/)** with modular cogs for leaderboard automation, music administration, game engines, utility workflows, telemetry, and web dashboard tooling.
 
 ## Project Overview
 
@@ -143,7 +143,7 @@ Docerfile
 
 ## Branding
 
-Built and maintained by **Deep Dey - The FUTURE IITIAN**.
+Built and maintained by **[Deep Dey](https://deepdey.vercel.app/)**.
 
 - Portfolio: https://deepdey.vercel.app/
 - Instagram: https://deepdey.vercel.app/insta
