@@ -16,6 +16,7 @@ from flask_cors import CORS
 from pymongo import MongoClient
 from werkzeug.exceptions import HTTPException
 
+from api.endpoints import register_api_endpoints
 from utils.audio_manager import (
     DEFAULT_ARTWORK,
     cleanup_path,
@@ -237,7 +238,7 @@ def _global_exception_guard(exc):
 
 @app.route("/")
 def home():
-    return render_template_string(_HOME_HTML, initial_guild_id=None)
+    return render_template_string(_DASHBOARD_HTML)
 
 
 @app.route("/server/<int:guild_id>")
@@ -247,83 +248,7 @@ def server_detail_page(guild_id: int):
 
 @app.route("/dashboard")
 def dashboard_page():
-    return render_template_string(_DASHBOARD_HTML)
-
-
-@app.route("/api/stats")
-@_api_json_guard
-def stats():
-    snapshot = _get_discovery_snapshot()
-    ping = "..."
-    try:
-        with open("stats.json", "r") as f:
-            ping = json.load(f).get("ping", "...")
-    except Exception:
-        pass
-    return jsonify(
-        {
-            "servers": snapshot["total_guilds"],
-            "ping": ping,
-            "users": snapshot["total_users"],
-            "global_message_count": snapshot["global_message_count"],
-            "uptime_seconds": snapshot["uptime_seconds"],
-        }
-    )
-
-
-@app.route("/api/public/guilds", methods=["GET"])
-@_api_json_guard
-def public_guilds():
-    snapshot = _get_discovery_snapshot()
-    query = (request.args.get("q") or "").strip().lower()
-    try:
-        page = max(1, int(request.args.get("page", 1)))
-    except ValueError:
-        return jsonify({"error": "Invalid page parameter"}), 400
-    per_page = 50
-
-    guilds = snapshot["guilds"]
-    if query:
-        terms = [term for term in re.split(r"\s+", query) if term]
-
-        def _match(entry: dict[str, Any]) -> bool:
-            haystack = f"{entry.get('name', '')}\n{entry.get('description', '')}".lower()
-            return all(term in haystack for term in terms)
-
-        guilds = [g for g in guilds if _match(g)]
-
-    start = (page - 1) * per_page
-    end = start + per_page
-    page_items = guilds[start:end]
-
-    return jsonify(
-        {
-            "items": page_items,
-            "pagination": {
-                "page": page,
-                "per_page": per_page,
-                "total_items": len(guilds),
-                "has_next": end < len(guilds),
-                "has_prev": page > 1,
-            },
-            "totals": {
-                "guilds": snapshot["total_guilds"],
-                "users": snapshot["total_users"],
-                "global_message_count": snapshot["global_message_count"],
-                "uptime_seconds": snapshot["uptime_seconds"],
-            },
-        }
-    )
-
-
-@app.route("/api/public/guilds/<int:guild_id>", methods=["GET"])
-@_api_json_guard
-def public_guild_detail(guild_id: int):
-    snapshot = _get_discovery_snapshot()
-    for guild in snapshot["guilds"]:
-        if int(guild.get("id", 0)) == guild_id:
-            return jsonify({"guild": guild})
-    return jsonify({"error": "Guild not found"}), 404
+    return render_template_string(_HOME_HTML, initial_guild_id=None)
 
 
 @app.route("/music/login", methods=["GET", "POST"])
@@ -348,137 +273,6 @@ def music_logout():
 @_require_music_auth
 def music_dashboard():
     return render_template_string(_MUSIC_HTML)
-
-
-@app.route("/api/music/tracks", methods=["GET"])
-@_api_json_guard
-@_require_music_auth
-def list_tracks():
-    if not music_col:
-        return jsonify({"error": "MONGO_URI is not configured"}), 503
-    try:
-        limit = max(1, min(200, int(request.args.get("limit", 100))))
-        skip = max(0, int(request.args.get("skip", 0)))
-    except ValueError:
-        return jsonify({"error": "Invalid pagination parameters"}), 400
-
-    docs = list(
-        music_col.find(
-            {}, {"title": 1, "name": 1, "artwork_url": 1, "file_url": 1, "url": 1}
-        ).sort("_id", -1).skip(skip).limit(limit)
-    )
-    tracks = [_track_doc_to_payload(doc) for doc in docs]
-    return jsonify({"tracks": tracks})
-
-
-@app.route("/api/music/tracks/<track_id>", methods=["PUT"])
-@_api_json_guard
-@_require_music_auth
-def edit_track(track_id: str):
-    if not music_col:
-        return jsonify({"error": "MONGO_URI is not configured"}), 503
-
-    data = request.get_json(silent=True) or {}
-    title = (data.get("title") or "").strip()
-    artwork_url = (data.get("artwork_url") or "").strip() or DEFAULT_ARTWORK
-
-    if not title:
-        return jsonify({"error": "title is required"}), 400
-
-    result = music_col.update_one(
-        _coerce_id_query(track_id),
-        {"$set": {"title": title, "name": title, "artwork_url": artwork_url}},
-    )
-    if result.matched_count == 0:
-        return jsonify({"error": "Track not found"}), 404
-    return jsonify({"ok": True})
-
-
-@app.route("/api/music/edit", methods=["POST"])
-@_api_json_guard
-@_require_music_auth
-def edit_track_post():
-    if not music_col:
-        return jsonify({"error": "MONGO_URI is not configured"}), 503
-
-    data = request.get_json(silent=True) or {}
-    track_id = (data.get("id") or data.get("track_id") or "").strip()
-    title = (data.get("title") or "").strip()
-    artwork_url = (data.get("artwork_url") or "").strip() or DEFAULT_ARTWORK
-
-    if not track_id:
-        return jsonify({"error": "track_id is required"}), 400
-    if not title:
-        return jsonify({"error": "title is required"}), 400
-
-    result = music_col.update_one(
-        _coerce_id_query(track_id),
-        {"$set": {"title": title, "name": title, "artwork_url": artwork_url}},
-    )
-    if result.matched_count == 0:
-        return jsonify({"error": "Track not found"}), 404
-    return jsonify({"ok": True})
-
-
-@app.route("/api/music/tracks/<track_id>", methods=["DELETE"])
-@_api_json_guard
-@_require_music_auth
-def delete_track(track_id: str):
-    if not music_col:
-        return jsonify({"error": "MONGO_URI is not configured"}), 503
-
-    result = music_col.delete_one(_coerce_id_query(track_id))
-    if result.deleted_count == 0:
-        return jsonify({"error": "Track not found"}), 404
-    return jsonify({"ok": True})
-
-
-@app.route("/api/music/process", methods=["POST"])
-@_api_json_guard
-@_require_music_auth
-def process_music():
-    if not music_col:
-        return jsonify({"error": "MONGO_URI is not configured"}), 503
-    if not SPACE_PASSWORD:
-        return jsonify({"error": "SPACE_PASSWORD is not configured"}), 503
-
-    tmp_dir = Path("./tmp")
-    tmp_dir.mkdir(parents=True, exist_ok=True)
-
-    if request.files.get("chunk"):
-        return _handle_chunk_flow(tmp_dir)
-
-    payload = request.get_json(silent=True) or {}
-    url = (payload.get("url") or "").strip()
-    if not url:
-        return jsonify({"error": "Either url or chunk upload is required"}), 400
-
-    source_file = None
-    final_mp3 = None
-    try:
-        source_file, extracted_title, extracted_artwork = _run_async(extract_from_url(url))
-        title = (payload.get("title") or extracted_title or "Untitled Track").strip()
-        artwork_url = (payload.get("artwork_url") or extracted_artwork or DEFAULT_ARTWORK).strip() or DEFAULT_ARTWORK
-
-        final_mp3 = _run_async(convert_to_96k_mp3(source_file, output_name=secrets.token_hex(8)))
-        cdn_url = _run_async(upload_to_cdn(final_mp3, title, SPACE_PASSWORD))
-
-        doc = {
-            "title": title,
-            "file_url": cdn_url,
-            "artwork_url": artwork_url,
-            "created_at": datetime.utcnow(),
-        }
-        inserted = music_col.insert_one(doc)
-        return jsonify({"ok": True, "track": {"id": str(inserted.inserted_id), **doc}})
-    except Exception as exc:
-        print(f"[MusicDashboard] URL processing failed: {type(exc).__name__}")
-        return jsonify({"error": "Failed to process URL input"}), 500
-    finally:
-        if source_file:
-            cleanup_path(source_file)
-        if final_mp3:
-            cleanup_path(final_mp3)
 
 
 def _handle_chunk_flow(tmp_dir: Path):
@@ -543,6 +337,36 @@ def _handle_chunk_flow(tmp_dir: Path):
             cleanup_path(final_mp3)
 
 
+def _register_api_routes():
+    register_api_endpoints(
+        app,
+        {
+            "api_json_guard": _api_json_guard,
+            "require_music_auth": _require_music_auth,
+            "require_utilities_auth": _require_utilities_auth,
+            "get_discovery_snapshot": _get_discovery_snapshot,
+            "track_doc_to_payload": _track_doc_to_payload,
+            "coerce_id_query": _coerce_id_query,
+            "run_async": _run_async,
+            "handle_chunk_flow": _handle_chunk_flow,
+            "music_col": music_col,
+            "keywords_col": keywords_col,
+            "tad_col": tad_col,
+            "quiz_col": quiz_col,
+            "SPACE_PASSWORD": SPACE_PASSWORD,
+            "DEFAULT_ARTWORK": DEFAULT_ARTWORK,
+            "convert_to_96k_mp3": convert_to_96k_mp3,
+            "extract_from_url": extract_from_url,
+            "upload_to_cdn": upload_to_cdn,
+            "cleanup_path": cleanup_path,
+            "secrets": secrets,
+        },
+    )
+
+
+_register_api_routes()
+
+
 def run():
     app.run(host="0.0.0.0", port=int(os.getenv("PORT", "8080")))
 
@@ -571,141 +395,6 @@ def utilities_logout():
 @_require_utilities_auth
 def utilities_dashboard():
     return render_template_string(_UTILITIES_HTML)
-
-
-# ── Utilities CRUD: Keywords ───────────────────────────────────────────────
-
-@app.route("/api/utilities/keywords", methods=["GET"])
-@_api_json_guard
-@_require_utilities_auth
-def list_keywords():
-    if not keywords_col:
-        return jsonify({"error": "MONGO_URI is not configured"}), 503
-    docs = list(keywords_col.find({}, {"trigger": 1, "reply": 1}))
-    return jsonify({"keywords": [{"id": str(d["_id"]), "trigger": d.get("trigger", ""), "reply": d.get("reply", "")} for d in docs]})
-
-
-@app.route("/api/utilities/keywords", methods=["POST"])
-@_api_json_guard
-@_require_utilities_auth
-def create_keyword():
-    if not keywords_col:
-        return jsonify({"error": "MONGO_URI is not configured"}), 503
-    data = request.get_json(silent=True) or {}
-    trigger = (data.get("trigger") or "").strip().lower()
-    reply = (data.get("reply") or "").strip()
-    if not trigger or not reply:
-        return jsonify({"error": "trigger and reply are required"}), 400
-    inserted = keywords_col.insert_one({"trigger": trigger, "reply": reply})
-    return jsonify({"ok": True, "id": str(inserted.inserted_id)})
-
-
-@app.route("/api/utilities/keywords/<kw_id>", methods=["PUT"])
-@_api_json_guard
-@_require_utilities_auth
-def update_keyword(kw_id: str):
-    if not keywords_col:
-        return jsonify({"error": "MONGO_URI is not configured"}), 503
-    data = request.get_json(silent=True) or {}
-    trigger = (data.get("trigger") or "").strip().lower()
-    reply = (data.get("reply") or "").strip()
-    if not trigger or not reply:
-        return jsonify({"error": "trigger and reply are required"}), 400
-    result = keywords_col.update_one(_coerce_id_query(kw_id), {"$set": {"trigger": trigger, "reply": reply}})
-    if result.matched_count == 0:
-        return jsonify({"error": "Keyword not found"}), 404
-    return jsonify({"ok": True})
-
-
-@app.route("/api/utilities/keywords/<kw_id>", methods=["DELETE"])
-@_api_json_guard
-@_require_utilities_auth
-def delete_keyword(kw_id: str):
-    if not keywords_col:
-        return jsonify({"error": "MONGO_URI is not configured"}), 503
-    result = keywords_col.delete_one(_coerce_id_query(kw_id))
-    if result.deleted_count == 0:
-        return jsonify({"error": "Keyword not found"}), 404
-    return jsonify({"ok": True})
-
-
-# ── Utilities CRUD: Truth or Dare ─────────────────────────────────────────
-
-@app.route("/api/utilities/tad", methods=["GET"])
-@_api_json_guard
-@_require_utilities_auth
-def list_tad():
-    if not tad_col:
-        return jsonify({"error": "MONGO_URI is not configured"}), 503
-    docs = list(tad_col.find({}, {"type": 1, "text": 1}))
-    return jsonify({"tad": [{"id": str(d["_id"]), "type": d.get("type", ""), "text": d.get("text", "")} for d in docs]})
-
-
-@app.route("/api/utilities/tad", methods=["POST"])
-@_api_json_guard
-@_require_utilities_auth
-def create_tad():
-    if not tad_col:
-        return jsonify({"error": "MONGO_URI is not configured"}), 503
-    data = request.get_json(silent=True) or {}
-    tad_type = (data.get("type") or "").strip().lower()
-    text = (data.get("text") or "").strip()
-    if tad_type not in ("truth", "dare") or not text:
-        return jsonify({"error": "type (truth|dare) and text are required"}), 400
-    inserted = tad_col.insert_one({"type": tad_type, "text": text})
-    return jsonify({"ok": True, "id": str(inserted.inserted_id)})
-
-
-@app.route("/api/utilities/tad/<tad_id>", methods=["DELETE"])
-@_api_json_guard
-@_require_utilities_auth
-def delete_tad(tad_id: str):
-    if not tad_col:
-        return jsonify({"error": "MONGO_URI is not configured"}), 503
-    result = tad_col.delete_one(_coerce_id_query(tad_id))
-    if result.deleted_count == 0:
-        return jsonify({"error": "Entry not found"}), 404
-    return jsonify({"ok": True})
-
-
-# ── Utilities CRUD: Quiz ──────────────────────────────────────────────────
-
-@app.route("/api/utilities/quiz", methods=["GET"])
-@_api_json_guard
-@_require_utilities_auth
-def list_quiz():
-    if not quiz_col:
-        return jsonify({"error": "MONGO_URI is not configured"}), 503
-    docs = list(quiz_col.find({}, {"question": 1, "options": 1, "correct_answer": 1}))
-    return jsonify({"quiz": [{"id": str(d["_id"]), "question": d.get("question", ""), "options": d.get("options", []), "correct_answer": d.get("correct_answer", "")} for d in docs]})
-
-
-@app.route("/api/utilities/quiz", methods=["POST"])
-@_api_json_guard
-@_require_utilities_auth
-def create_quiz():
-    if not quiz_col:
-        return jsonify({"error": "MONGO_URI is not configured"}), 503
-    data = request.get_json(silent=True) or {}
-    question = (data.get("question") or "").strip()
-    options = [str(o).strip() for o in (data.get("options") or []) if str(o).strip()]
-    correct_answer = (data.get("correct_answer") or "").strip()
-    if not question or len(options) != 4 or not correct_answer or correct_answer not in options:
-        return jsonify({"error": "question, exactly 4 options, and a valid correct_answer are required"}), 400
-    inserted = quiz_col.insert_one({"question": question, "options": options, "correct_answer": correct_answer})
-    return jsonify({"ok": True, "id": str(inserted.inserted_id)})
-
-
-@app.route("/api/utilities/quiz/<quiz_id>", methods=["DELETE"])
-@_api_json_guard
-@_require_utilities_auth
-def delete_quiz(quiz_id: str):
-    if not quiz_col:
-        return jsonify({"error": "MONGO_URI is not configured"}), 503
-    result = quiz_col.delete_one(_coerce_id_query(quiz_id))
-    if result.deleted_count == 0:
-        return jsonify({"error": "Quiz not found"}), 404
-    return jsonify({"ok": True})
 
 
 def guild_cache_refresh_loop():
@@ -806,11 +495,21 @@ _MUSIC_HTML = """
 const CHUNK_SIZE = 10 * 1024 * 1024;
 let tracks = [];
 
+async function fetchJson(url, options) {
+  const res = await fetch(url, options);
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || 'Request failed');
+  return data;
+}
+
 async function refreshTracks() {
-  const res = await fetch('/api/music/tracks');
-  const data = await res.json();
-  tracks = data.tracks || [];
-  renderTracks();
+  try {
+    const data = await fetchJson('/api/music/tracks');
+    tracks = data.tracks || [];
+    renderTracks();
+  } catch (err) {
+    alert(err.message || 'Failed to load tracks');
+  }
 }
 
 function renderTracks() {
@@ -840,7 +539,7 @@ async function editTrack(id) {
   const title = prompt('New title', t.title || '');
   if (!title) return;
   const artwork = prompt('New artwork URL', t.artwork_url || '') || '';
-  await fetch('/api/music/edit', {
+  await fetchJson('/api/music/edit', {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({track_id: id, title, artwork_url: artwork})
@@ -850,7 +549,7 @@ async function editTrack(id) {
 
 async function deleteTrack(id) {
   if (!confirm('Delete this track?')) return;
-  await fetch(`/api/music/tracks/${id}`, { method: 'DELETE' });
+  await fetchJson(`/api/music/tracks/${id}`, { method: 'DELETE' });
   await refreshTracks();
 }
 
@@ -861,13 +560,15 @@ document.getElementById('addUrlBtn').addEventListener('click', async () => {
   const title = document.getElementById('urlTitle').value.trim();
   const artwork_url = document.getElementById('urlArtwork').value.trim();
   if (!url) return alert('URL required');
-  const res = await fetch('/api/music/process', {
-    method: 'POST',
-    headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({url, title, artwork_url})
-  });
-  const data = await res.json();
-  if (!res.ok) return alert(data.error || 'Failed');
+  try {
+    await fetchJson('/api/music/process', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({url, title, artwork_url})
+    });
+  } catch (err) {
+    return alert(err.message || 'Failed');
+  }
   document.getElementById('urlInput').value = '';
   document.getElementById('urlTitle').value = '';
   document.getElementById('urlArtwork').value = '';
@@ -891,7 +592,8 @@ dropZone.addEventListener('drop', async e => {
   const artwork_url = document.getElementById('fileArtwork').value.trim();
   const status = document.getElementById('uploadStatus');
 
-  for (let i = 0; i < total; i++) {
+  try {
+    for (let i = 0; i < total; i++) {
     const start = i * CHUNK_SIZE;
     const end = Math.min(file.size, start + CHUNK_SIZE);
     const blob = file.slice(start, end);
@@ -904,12 +606,7 @@ dropZone.addEventListener('drop', async e => {
     form.append('chunk', blob, `${file.name}.part${i}`);
 
     status.textContent = `Uploading chunk ${i + 1}/${total}...`;
-    const res = await fetch('/api/music/process', { method: 'POST', body: form });
-    const data = await res.json();
-    if (!res.ok) {
-      status.textContent = data.error || 'Upload failed';
-      return;
-    }
+    const data = await fetchJson('/api/music/process', { method: 'POST', body: form });
     if (data.status === 'completed') {
       status.textContent = 'Upload complete and processed.';
     }
@@ -918,6 +615,9 @@ dropZone.addEventListener('drop', async e => {
   document.getElementById('fileTitle').value = '';
   document.getElementById('fileArtwork').value = '';
   await refreshTracks();
+  } catch (err) {
+    status.textContent = err.message || 'Upload failed';
+  }
 });
 
 refreshTracks();
@@ -933,14 +633,14 @@ _HOME_HTML = """
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Discord Top User — Discovery Dashboard | Deep Dey</title>
+  <title>Discord Top User — Public Discovery Dashboard | Deep Dey</title>
   <meta name="description" content="Discover real-time Discord communities where Discord Top User is active. Explore guild stats, leaderboard automation, music tools, games, and admin utilities.">
   <meta name="keywords" content="Discord bot, leaderboard bot, discord music bot, discord games bot, Deep Dey, FUTURE IITIAN, server analytics">
-  <link rel="canonical" href="https://deepdey.onrender.com/">
+  <link rel="canonical" href="https://deepdey.onrender.com/dashboard">
   <meta property="og:title" content="Discord Top User — Discovery Dashboard">
   <meta property="og:description" content="Live discovery dashboard for Discord-Top-User with searchable server list, live stats, and integration details.">
   <meta property="og:type" content="website">
-  <meta property="og:url" content="https://deepdey.onrender.com/">
+  <meta property="og:url" content="https://deepdey.onrender.com/dashboard">
   <meta name="twitter:card" content="summary_large_image">
   <meta name="twitter:title" content="Discord Top User — Discovery Dashboard">
   <meta name="twitter:description" content="Live searchable Discord server discovery dashboard by Deep Dey.">
@@ -952,7 +652,7 @@ _HOME_HTML = """
     "name": "Discord Top User",
     "applicationCategory": "DeveloperApplication",
     "operatingSystem": "Cross-platform",
-    "url": "https://deepdey.onrender.com/",
+    "url": "https://deepdey.onrender.com/dashboard",
     "description": "A professional Discord bot platform with leaderboard tracking, music administration, games, and utilities.",
     "creator": {
       "@type": "Person",
@@ -1066,10 +766,18 @@ _HOME_HTML = """
     async function loadGuilds() {
       const params = new URLSearchParams({ page: String(currentPage) });
       if (currentQuery) params.set("q", currentQuery);
+      const list = document.getElementById("serverList");
       const res = await fetch(`/api/public/guilds?${params.toString()}`);
       const data = await res.json();
+      if (!res.ok) {
+        list.innerHTML = `<p class="text-red-400">${data.error || "Failed to load servers."}</p>`;
+        renderStats({ guilds: 0, users: 0, global_message_count: 0, uptime_seconds: 0 });
+        document.getElementById("prevBtn").disabled = true;
+        document.getElementById("nextBtn").disabled = true;
+        document.getElementById("pageLabel").textContent = "Page 1";
+        return;
+      }
       const items = data.items || [];
-      const list = document.getElementById("serverList");
       list.innerHTML = items.map(cardTemplate).join("") || `<p class="text-slate-400">No matching servers found.</p>`;
       renderStats(data.totals || { guilds: 0, users: 0, global_message_count: 0, uptime_seconds: 0 });
       const pageInfo = data.pagination || {};
@@ -1121,8 +829,46 @@ _DASHBOARD_HTML = """
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Discord Top User — Dashboard</title>
+  <title>Discord Top User — Homepage | Commands, Usage & Modules</title>
+  <meta name="description" content="Official homepage for Discord Top User: commands, setup flow, module overview, and where to customize music/utilities dashboards.">
+  <meta name="keywords" content="Discord Top User, Discord bot commands, Discord bot dashboard, how to use Discord bot, music bot, utility bot">
+  <meta name="author" content="Deep Dey">
+  <meta name="robots" content="index, follow, max-image-preview:large">
+  <link rel="canonical" href="https://deepdey.onrender.com/">
+  <meta property="og:type" content="website">
+  <meta property="og:title" content="Discord Top User — Homepage">
+  <meta property="og:description" content="Learn what Discord Top User does, how to use commands, and where to customize modules.">
+  <meta property="og:url" content="https://deepdey.onrender.com/">
+  <meta property="og:site_name" content="Discord Top User">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="Discord Top User — Homepage">
+  <meta name="twitter:description" content="Commands, setup instructions, modules, and dashboard links for Discord Top User.">
   <script src="https://cdn.tailwindcss.com"></script>
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "WebSite",
+    "name": "Discord Top User",
+    "url": "https://deepdey.onrender.com/",
+    "description": "Homepage for the Discord Top User bot platform and dashboards."
+  }
+  </script>
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "SoftwareApplication",
+    "name": "Discord Top User",
+    "applicationCategory": "DeveloperApplication",
+    "operatingSystem": "Cross-platform",
+    "url": "https://deepdey.onrender.com/",
+    "description": "A Discord bot platform with leaderboard automation, music management, games, and utilities.",
+    "creator": {
+      "@type": "Person",
+      "name": "Deep Dey",
+      "url": "https://deepdey.vercel.app/"
+    }
+  }
+  </script>
 </head>
 <body class="bg-[#0f1115] text-slate-100 min-h-screen">
   <header class="border-b border-slate-800 bg-[#11161f]/95 backdrop-blur sticky top-0 z-20">
@@ -1140,30 +886,38 @@ _DASHBOARD_HTML = """
 
   <main class="max-w-7xl mx-auto px-4 py-8 space-y-6">
     <section class="rounded-2xl border border-indigo-600/40 bg-gradient-to-br from-indigo-700/20 to-slate-900 p-6">
-      <h1 class="text-3xl md:text-4xl font-bold">Bot Dashboard</h1>
+      <h1 class="text-3xl md:text-4xl font-bold">Discord Top User Homepage</h1>
+      <p class="text-slate-300 mt-2">Everything about the bot in one place: what it is, what it does, how to use it, and where to configure modules.</p>
       <p class="text-slate-300 mt-2">Built by <a href="https://deepdey.vercel.app/" class="underline hover:text-white" target="_blank" rel="noopener noreferrer">Deep Dey</a>.</p>
-      <p class="text-slate-300 mt-2">Configure modules, review commands, and understand what Discord Top User does.</p>
-    </section>
-
-    <section class="grid md:grid-cols-2 gap-4">
-      <a href="/music" class="rounded-xl border border-slate-800 bg-[#151b24] p-5 hover:border-indigo-500">
-        <h2 class="text-xl font-semibold">Music Customization</h2>
-        <p class="text-slate-400 mt-2">Manage tracks, upload sources, edit artwork, and control playback content.</p>
-      </a>
-      <a href="/utilities" class="rounded-xl border border-slate-800 bg-[#151b24] p-5 hover:border-indigo-500">
-        <h2 class="text-xl font-semibold">Utilities Customization</h2>
-        <p class="text-slate-400 mt-2">Configure keywords, truth-or-dare packs, and quiz questions from the web dashboard.</p>
-      </a>
     </section>
 
     <section class="rounded-xl border border-slate-800 bg-[#151b24] p-5">
-      <h2 class="text-2xl font-semibold">Why this bot and what it does</h2>
-      <ul class="mt-3 list-disc list-inside text-slate-300 space-y-1">
-        <li>Tracks server activity and generates leaderboard winners automatically.</li>
-        <li>Streams and manages music with dashboard and slash command workflows.</li>
-        <li>Adds games and utility tools for daily community engagement.</li>
-        <li>Supports modular administration with telemetry-backed reliability.</li>
-      </ul>
+      <h2 class="text-2xl font-semibold">What is this?</h2>
+      <p class="mt-3 text-slate-300">Discord Top User is a modular Discord bot platform with leaderboard tracking, music management, games, utilities, telemetry, and web dashboards.</p>
+    </section>
+
+    <section class="rounded-xl border border-slate-800 bg-[#151b24] p-5">
+      <h2 class="text-2xl font-semibold">How to use</h2>
+      <ol class="mt-3 list-decimal list-inside text-slate-300 space-y-1">
+        <li>Invite the bot to your server using the invite link from the dashboard.</li>
+        <li>Use slash command groups like <code>/setup</code>, <code>/music</code>, <code>/utility</code>, and <code>/game</code>.</li>
+        <li>Use Music Admin and Utilities Admin pages for secure web-based configuration.</li>
+        <li>Open <a href="/dashboard" class="underline hover:text-white">/dashboard</a> for live server discovery and public bot stats.</li>
+      </ol>
+    </section>
+
+    <section class="rounded-xl border border-slate-800 bg-[#151b24] p-5">
+      <h2 class="text-2xl font-semibold">Where you can customize</h2>
+      <div class="mt-3 grid md:grid-cols-2 gap-4 text-slate-300">
+        <a href="/music" class="rounded-lg border border-slate-700 p-4 hover:border-indigo-500">
+          <h3 class="font-semibold text-slate-100">Music Admin</h3>
+          <p class="mt-1">Manage tracks, uploads, artwork, and playback content.</p>
+        </a>
+        <a href="/utilities" class="rounded-lg border border-slate-700 p-4 hover:border-indigo-500">
+          <h3 class="font-semibold text-slate-100">Utilities Admin</h3>
+          <p class="mt-1">Manage keyword replies, truth-or-dare entries, and quiz questions.</p>
+        </a>
+      </div>
     </section>
 
     <section class="rounded-xl border border-slate-800 bg-[#151b24] p-5">
@@ -1171,11 +925,11 @@ _DASHBOARD_HTML = """
       <div class="mt-3 grid md:grid-cols-2 gap-4 text-slate-300">
         <div>
           <h3 class="font-semibold text-slate-100">Music</h3>
-          <p>/music join, /music start, /music select, /music pause, /music resume, /music leave, /music nowplaying, /music live, /music 247 (toggle 24/7 playback mode)</p>
+          <p>/music join, /music start, /music select, /music pause, /music resume, /music leave, /music nowplaying, /music live, /music 247</p>
         </div>
         <div>
-          <h3 class="font-semibold text-slate-100">Setup and Utilities</h3>
-          <p>/setup, /utility, /productivity, /proxy, /game (module-specific command groups available in Discord)</p>
+          <h3 class="font-semibold text-slate-100">Setup & Utilities</h3>
+          <p>/setup, /utility, /productivity, /proxy, /game</p>
         </div>
       </div>
     </section>
@@ -1324,13 +1078,23 @@ function showTab(name) {
   if (name === 'quiz') refreshQuiz();
 }
 
+async function reqJson(url, options) {
+  const res = await fetch(url, options);
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || 'Request failed');
+  return data;
+}
+
 // ── Keywords ──────────────────────────────────────────────────────────────
 let keywords = [];
 async function refreshKeywords() {
-  const res = await fetch('/api/utilities/keywords');
-  const data = await res.json();
-  keywords = data.keywords || [];
-  renderKeywords();
+  try {
+    const data = await reqJson('/api/utilities/keywords');
+    keywords = data.keywords || [];
+    renderKeywords();
+  } catch (err) {
+    alert(err.message || 'Failed to load keywords');
+  }
 }
 function renderKeywords() {
   const body = document.getElementById('kwBody');
@@ -1350,9 +1114,11 @@ async function createKeyword() {
   const trigger = document.getElementById('kwTrigger').value.trim();
   const reply = document.getElementById('kwReply').value.trim();
   if (!trigger || !reply) return alert('Both trigger and reply are required.');
-  const res = await fetch('/api/utilities/keywords', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({trigger, reply})});
-  const data = await res.json();
-  if (!res.ok) return alert(data.error || 'Failed');
+  try {
+    await reqJson('/api/utilities/keywords', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({trigger, reply})});
+  } catch (err) {
+    return alert(err.message || 'Failed');
+  }
   document.getElementById('kwTrigger').value = '';
   document.getElementById('kwReply').value = '';
   await refreshKeywords();
@@ -1364,22 +1130,25 @@ async function editKeyword(id) {
   if (!trigger) return;
   const reply = prompt('New reply', k.reply);
   if (!reply) return;
-  await fetch('/api/utilities/keywords/' + id, {method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify({trigger, reply})});
+  await reqJson('/api/utilities/keywords/' + id, {method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify({trigger, reply})});
   await refreshKeywords();
 }
 async function deleteKeyword(id) {
   if (!confirm('Delete this keyword?')) return;
-  await fetch('/api/utilities/keywords/' + id, {method:'DELETE'});
+  await reqJson('/api/utilities/keywords/' + id, {method:'DELETE'});
   await refreshKeywords();
 }
 
 // ── Truth or Dare ──────────────────────────────────────────────────────────
 let tadItems = [];
 async function refreshTAD() {
-  const res = await fetch('/api/utilities/tad');
-  const data = await res.json();
-  tadItems = data.tad || [];
-  renderTAD();
+  try {
+    const data = await reqJson('/api/utilities/tad');
+    tadItems = data.tad || [];
+    renderTAD();
+  } catch (err) {
+    alert(err.message || 'Failed to load truth or dare entries');
+  }
 }
 function renderTAD() {
   const body = document.getElementById('tadBody');
@@ -1396,25 +1165,30 @@ async function createTAD() {
   const type = document.getElementById('tadType').value;
   const text = document.getElementById('tadText').value.trim();
   if (!text) return alert('Text is required.');
-  const res = await fetch('/api/utilities/tad', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({type, text})});
-  const data = await res.json();
-  if (!res.ok) return alert(data.error || 'Failed');
+  try {
+    await reqJson('/api/utilities/tad', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({type, text})});
+  } catch (err) {
+    return alert(err.message || 'Failed');
+  }
   document.getElementById('tadText').value = '';
   await refreshTAD();
 }
 async function deleteTAD(id) {
   if (!confirm('Delete this entry?')) return;
-  await fetch('/api/utilities/tad/' + id, {method:'DELETE'});
+  await reqJson('/api/utilities/tad/' + id, {method:'DELETE'});
   await refreshTAD();
 }
 
 // ── Quiz ──────────────────────────────────────────────────────────────────
 let quizItems = [];
 async function refreshQuiz() {
-  const res = await fetch('/api/utilities/quiz');
-  const data = await res.json();
-  quizItems = data.quiz || [];
-  renderQuiz();
+  try {
+    const data = await reqJson('/api/utilities/quiz');
+    quizItems = data.quiz || [];
+    renderQuiz();
+  } catch (err) {
+    alert(err.message || 'Failed to load quiz entries');
+  }
 }
 function renderQuiz() {
   const body = document.getElementById('quizBody');
@@ -1440,15 +1214,17 @@ async function createQuiz() {
   const correct_answer = document.getElementById('quizCorrect').value.trim();
   if (!question || options.some(o => !o) || !correct_answer) return alert('All fields are required.');
   if (!options.includes(correct_answer)) return alert('Correct answer must exactly match one of the 4 options.');
-  const res = await fetch('/api/utilities/quiz', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({question, options, correct_answer})});
-  const data = await res.json();
-  if (!res.ok) return alert(data.error || 'Failed');
+  try {
+    await reqJson('/api/utilities/quiz', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({question, options, correct_answer})});
+  } catch (err) {
+    return alert(err.message || 'Failed');
+  }
   ['quizQ','quizO1','quizO2','quizO3','quizO4','quizCorrect'].forEach(id => document.getElementById(id).value = '');
   await refreshQuiz();
 }
 async function deleteQuiz(id) {
   if (!confirm('Delete this question?')) return;
-  await fetch('/api/utilities/quiz/' + id, {method:'DELETE'});
+  await reqJson('/api/utilities/quiz/' + id, {method:'DELETE'});
   await refreshQuiz();
 }
 
