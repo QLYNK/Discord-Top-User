@@ -1142,9 +1142,13 @@ async function deleteKeyword(id) {
 // ── Truth or Dare ──────────────────────────────────────────────────────────
 let tadItems = [];
 async function refreshTAD() {
-  const data = await reqJson('/api/utilities/tad');
-  tadItems = data.tad || [];
-  renderTAD();
+  try {
+    const data = await reqJson('/api/utilities/tad');
+    tadItems = data.tad || [];
+    renderTAD();
+  } catch (err) {
+    alert(err.message || 'Failed to load truth or dare entries');
+  }
 }
 function renderTAD() {
   const body = document.getElementById('tadBody');
@@ -1178,9 +1182,13 @@ async function deleteTAD(id) {
 // ── Quiz ──────────────────────────────────────────────────────────────────
 let quizItems = [];
 async function refreshQuiz() {
-  const data = await reqJson('/api/utilities/quiz');
-  quizItems = data.quiz || [];
-  renderQuiz();
+  try {
+    const data = await reqJson('/api/utilities/quiz');
+    quizItems = data.quiz || [];
+    renderQuiz();
+  } catch (err) {
+    alert(err.message || 'Failed to load quiz entries');
+  }
 }
 function renderQuiz() {
   const body = document.getElementById('quizBody');
