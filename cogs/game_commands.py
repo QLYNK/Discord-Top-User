@@ -2217,7 +2217,7 @@ class GameCommands(commands.Cog):
                 join_time = f"<t:{join_ts}:F> • <t:{join_ts}:R>"
             status_text = str(member.status).replace("_", " ").title()
 
-        pomodoro_profile = await pomodoro_profiles_col.find_one({"user_id": {"$in": db._user_id_variants(interaction.user.id)}})
+        pomodoro_profile = await pomodoro_profiles_col.find_one({"user_id": {"$in": db.user_id_variants(interaction.user.id)}})
         if not pomodoro_profile:
             pomodoro_profile = {
                 "work_minutes": 25,
@@ -2235,7 +2235,7 @@ class GameCommands(commands.Cog):
             f"Lifetime Focus: {int(float(pomodoro_profile.get('lifetime_focus_minutes', 0.0)) * 60)}s"
         )
 
-        session = await pomodoro_sessions_col.find_one({"user_id": {"$in": db._user_id_variants(interaction.user.id)}})
+        session = await pomodoro_sessions_col.find_one({"user_id": {"$in": db.user_id_variants(interaction.user.id)}})
         if session:
             now = datetime.now(timezone.utc)
             status = str(session.get("status", "unknown")).title()

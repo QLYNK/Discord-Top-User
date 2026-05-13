@@ -30,10 +30,15 @@ def _user_id_variants(user_id: int) -> list[int | str]:
     return [uid, str(uid)]
 
 
+def user_id_variants(user_id: int) -> list[int | str]:
+    """Public helper for callers that need compatibility with legacy string user_id records."""
+    return _user_id_variants(user_id)
+
+
 def _safe_int(value) -> int:
     try:
         return int(value)
-    except Exception:
+    except (TypeError, ValueError):
         return 0
 
 async def get_guild_settings(guild_id: int):
@@ -171,7 +176,7 @@ async def bulk_update_user_profiles(updates: list[dict]):
         if inc_fields:
             payload["$inc"] = inc_fields
 
-        operations.append(UpdateOne({"user_id": {"$in": _user_id_variants(uid)}}, payload, upsert=True))
+        operations.append(UpdateOne({"user_id": {"$in": user_id_variants(uid)}}, payload, upsert=True))
 
     if operations:
         await user_profiles_col.bulk_write(operations)
@@ -184,7 +189,7 @@ async def get_sorted_user_profiles(limit: int | None = None) -> list[dict]:
     for doc in docs:
         try:
             uid = int(doc.get("user_id"))
-        except Exception:
+        except (TypeError, ValueError):
             continue
         current = merged.setdefault(uid, _default_user_profile(uid))
         current["points"] += _safe_int(doc.get("points", 0))
