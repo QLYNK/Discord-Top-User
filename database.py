@@ -172,7 +172,6 @@ async def bulk_update_user_profiles(updates: list[dict]):
             payload["$inc"] = inc_fields
 
         operations.append(UpdateOne({"user_id": {"$in": _user_id_variants(uid)}}, payload, upsert=True))
-        operations.append(DeleteOne({"user_id": str(uid)}))
 
     if operations:
         await user_profiles_col.bulk_write(operations)

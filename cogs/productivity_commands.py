@@ -648,10 +648,10 @@ class ProductivityCommands(commands.Cog):
             "`/pomodoro profile view`\n\n"
             "**Session Commands**\n"
             "`/pomodoro start`\n"
-            "`/pomodoro status`\n"
             "`/pomodoro pause`\n"
             "`/pomodoro resume`\n"
-            "`/pomodoro end`"
+            "`/pomodoro end`\n"
+            "`/pomodoro status`"
         )
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
