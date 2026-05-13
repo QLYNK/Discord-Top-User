@@ -1,6 +1,6 @@
 import os
 from motor.motor_asyncio import AsyncIOMotorClient
-from pymongo import ReturnDocument, UpdateOne
+from pymongo import DeleteOne, UpdateOne
 
 # Environment variable se MongoDB URI lena
 MONGO_URI = os.getenv("MONGO_URI")
@@ -23,6 +23,18 @@ def _default_user_profile(user_id: int) -> dict:
         "losses": 0,
         "total_games": 0,
     }
+
+
+def _user_id_variants(user_id: int) -> list[int | str]:
+    uid = int(user_id)
+    return [uid, str(uid)]
+
+
+def _safe_int(value) -> int:
+    try:
+        return int(value)
+    except Exception:
+        return 0
 
 async def get_guild_settings(guild_id: int):
     """Server ki settings fetch karta hai, nahi hone par default create karta hai."""
@@ -98,12 +110,42 @@ async def bulk_update_activity(buffer_data: dict):
 
 async def get_user_profile(user_id: int) -> dict:
     """Economy profile fetch karta hai, nahi hone par default create karta hai."""
-    return await user_profiles_col.find_one_and_update(
-        {"user_id": user_id},
-        {"$setOnInsert": _default_user_profile(user_id)},
-        upsert=True,
-        return_document=ReturnDocument.AFTER,
-    )
+    uid = int(user_id)
+    variants = _user_id_variants(uid)
+    docs = await user_profiles_col.find({"user_id": {"$in": variants}}).to_list(length=None)
+
+    if not docs:
+        profile = _default_user_profile(uid)
+        await user_profiles_col.insert_one(profile)
+        return profile
+
+    if len(docs) == 1:
+        profile = docs[0]
+        normalized = {
+            "user_id": uid,
+            "points": _safe_int(profile.get("points", 0)),
+            "wins": _safe_int(profile.get("wins", 0)),
+            "losses": _safe_int(profile.get("losses", 0)),
+            "total_games": _safe_int(profile.get("total_games", 0)),
+        }
+        if profile.get("user_id") != uid or any(field not in profile for field in ("points", "wins", "losses", "total_games")):
+            await user_profiles_col.update_one({"_id": profile["_id"]}, {"$set": normalized})
+        return normalized
+
+    merged = _default_user_profile(uid)
+    merged["points"] = sum(_safe_int(doc.get("points", 0)) for doc in docs)
+    merged["wins"] = sum(_safe_int(doc.get("wins", 0)) for doc in docs)
+    merged["losses"] = sum(_safe_int(doc.get("losses", 0)) for doc in docs)
+    merged["total_games"] = sum(_safe_int(doc.get("total_games", 0)) for doc in docs)
+
+    canonical = next((doc for doc in docs if doc.get("user_id") == uid), docs[0])
+    delete_ops = [DeleteOne({"_id": doc["_id"]}) for doc in docs if doc["_id"] != canonical["_id"]]
+
+    await user_profiles_col.update_one({"_id": canonical["_id"]}, {"$set": merged})
+    if delete_ops:
+        await user_profiles_col.bulk_write(delete_ops)
+
+    return merged
 
 
 async def bulk_update_user_profiles(updates: list[dict]):
@@ -121,11 +163,16 @@ async def bulk_update_user_profiles(updates: list[dict]):
             if int(update.get(field, 0)) != 0
         }
 
-        payload = {"$setOnInsert": _default_user_profile(int(user_id))}
+        uid = int(user_id)
+        payload = {
+            "$setOnInsert": _default_user_profile(uid),
+            "$set": {"user_id": uid},
+        }
         if inc_fields:
             payload["$inc"] = inc_fields
 
-        operations.append(UpdateOne({"user_id": int(user_id)}, payload, upsert=True))
+        operations.append(UpdateOne({"user_id": {"$in": _user_id_variants(uid)}}, payload, upsert=True))
+        operations.append(DeleteOne({"user_id": str(uid)}))
 
     if operations:
         await user_profiles_col.bulk_write(operations)
@@ -133,21 +180,31 @@ async def bulk_update_user_profiles(updates: list[dict]):
 
 async def get_sorted_user_profiles(limit: int | None = None) -> list[dict]:
     """Points ke hisaab se global sorted profiles return karta hai."""
-    cursor = user_profiles_col.find({}).sort([("points", -1), ("user_id", 1)])
+    docs = await user_profiles_col.find({}).to_list(length=None)
+    merged: dict[int, dict] = {}
+    for doc in docs:
+        try:
+            uid = int(doc.get("user_id"))
+        except Exception:
+            continue
+        current = merged.setdefault(uid, _default_user_profile(uid))
+        current["points"] += _safe_int(doc.get("points", 0))
+        current["wins"] += _safe_int(doc.get("wins", 0))
+        current["losses"] += _safe_int(doc.get("losses", 0))
+        current["total_games"] += _safe_int(doc.get("total_games", 0))
+
+    profiles = sorted(merged.values(), key=lambda p: (-_safe_int(p.get("points", 0)), _safe_int(p.get("user_id", 0))))
     if limit is not None:
-        cursor = cursor.limit(limit)
-    return await cursor.to_list(length=limit)
+        return profiles[:limit]
+    return profiles
 
 
 async def get_user_global_rank(user_id: int) -> int:
     """Deterministic global rank return karta hai; ties me lower user_id ko higher rank milta hai."""
-    profile = await get_user_profile(user_id)
-    higher_count = await user_profiles_col.count_documents(
-        {
-            "$or": [
-                {"points": {"$gt": profile["points"]}},
-                {"points": profile["points"], "user_id": {"$lt": user_id}},
-            ]
-        }
-    )
-    return higher_count + 1
+    uid = int(user_id)
+    await get_user_profile(uid)
+    profiles = await get_sorted_user_profiles()
+    for idx, profile in enumerate(profiles, start=1):
+        if _safe_int(profile.get("user_id")) == uid:
+            return idx
+    return len(profiles) + 1

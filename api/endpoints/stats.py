@@ -16,10 +16,10 @@ def register(app, deps):
             pass
         return jsonify(
             {
-                "servers": snapshot["total_guilds"],
+                "servers": snapshot.get("total_guilds", 0),
                 "ping": ping,
-                "users": snapshot["total_users"],
-                "global_message_count": snapshot["global_message_count"],
-                "uptime_seconds": snapshot["uptime_seconds"],
+                "users": snapshot.get("total_users", 0),
+                "global_message_count": snapshot.get("global_message_count", 0),
+                "uptime_seconds": snapshot.get("uptime_seconds", 0),
             }
         )

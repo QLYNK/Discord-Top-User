@@ -400,7 +400,10 @@ class ProductivityCommands(commands.Cog):
             "excerpt": _excerpt(message.content),
             "created_at": _utc_now(),
         }
-        await pomodoro_sessions_col.update_one({"_id": target_doc["_id"]}, {"$push": {"missed": entry}})
+        await pomodoro_sessions_col.update_one(
+            {"_id": target_doc["_id"]},
+            {"$push": {"missed": entry}, "$set": {"updated_at": _utc_now()}},
+        )
 
     async def _get_referenced_author_id(self, message: discord.Message) -> int | None:
         if not message.reference:
@@ -562,6 +565,7 @@ class ProductivityCommands(commands.Cog):
             "started_at": _utc_now(),
             "paused_at": None,
             "missed": [],
+            "updated_at": _utc_now(),
         }
         await pomodoro_sessions_col.insert_one(payload)
         await self._schedule_session_timeout(interaction.user.id, work_seconds)
@@ -644,6 +648,7 @@ class ProductivityCommands(commands.Cog):
             "`/pomodoro profile view`\n\n"
             "**Session Commands**\n"
             "`/pomodoro start`\n"
+            "`/pomodoro status`\n"
             "`/pomodoro pause`\n"
             "`/pomodoro resume`\n"
             "`/pomodoro end`"
@@ -653,6 +658,46 @@ class ProductivityCommands(commands.Cog):
     @pomodoro_group.command(name="start", description="Start a focus session")
     async def pomodoro_start(self, interaction: discord.Interaction):
         await interaction.response.send_modal(PomodoroTaskModal(self))
+
+    @pomodoro_group.command(name="status", description="View your current focus session status")
+    async def pomodoro_status(self, interaction: discord.Interaction):
+        profile = await self._get_or_create_profile(interaction.user.id)
+        session = await pomodoro_sessions_col.find_one({"user_id": interaction.user.id})
+
+        embed = discord.Embed(title="Pomodoro Status", color=0x5865F2, timestamp=_utc_now())
+        embed.add_field(name="Work Minutes", value=str(profile.get("work_minutes", 25)), inline=True)
+        embed.add_field(name="Short Break", value=f"{profile.get('short_break_minutes', 5)} min", inline=True)
+        embed.add_field(name="Long Break", value=f"{profile.get('long_break_minutes', 15)} min", inline=True)
+
+        if not session:
+            embed.add_field(name="Session", value="No active or paused focus session.", inline=False)
+            lifetime_minutes = float(profile.get("lifetime_focus_minutes", 0.0))
+            embed.add_field(name="Lifetime Focus", value=_format_hms(int(lifetime_minutes * 60)), inline=False)
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+
+        now = _utc_now()
+        status = str(session.get("status", "unknown")).title()
+        remaining = int(session.get("remaining_seconds", 0))
+        focused = int(session.get("focused_seconds_accum", 0))
+        last_resumed_at = session.get("last_resumed_at")
+        if session.get("status") == "running" and isinstance(last_resumed_at, datetime):
+            elapsed = max(0, int((now - last_resumed_at).total_seconds()))
+            remaining = max(0, remaining - elapsed)
+            focused += elapsed
+
+        started_at = session.get("started_at")
+        updated_at = session.get("updated_at")
+        started_text = f"<t:{int(started_at.timestamp())}:F> • <t:{int(started_at.timestamp())}:R>" if isinstance(started_at, datetime) else "Unknown"
+        updated_text = f"<t:{int(updated_at.timestamp())}:F> • <t:{int(updated_at.timestamp())}:R>" if isinstance(updated_at, datetime) else "Unknown"
+
+        embed.add_field(name="Session State", value=status, inline=True)
+        embed.add_field(name="Remaining", value=f"{remaining // 60}m {remaining % 60}s", inline=True)
+        embed.add_field(name="Focused", value=f"{focused // 60}m {focused % 60}s", inline=True)
+        embed.add_field(name="Task", value=str(session.get("task", "Focus session"))[:1024], inline=False)
+        embed.add_field(name="Started", value=started_text, inline=False)
+        embed.add_field(name="Last Update", value=updated_text, inline=False)
+        await interaction.response.send_message(embed=embed, ephemeral=True)
 
     @pomodoro_group.command(name="pause", description="Pause your active focus session")
     async def pomodoro_pause(self, interaction: discord.Interaction):
@@ -675,6 +720,7 @@ class ProductivityCommands(commands.Cog):
                     "focused_seconds_accum": focused,
                     "paused_at": now,
                     "last_resumed_at": None,
+                    "updated_at": now,
                 }
             },
         )
@@ -707,7 +753,7 @@ class ProductivityCommands(commands.Cog):
         now = _utc_now()
         await pomodoro_sessions_col.update_one(
             {"user_id": interaction.user.id},
-            {"$set": {"status": "running", "last_resumed_at": now, "paused_at": None}},
+            {"$set": {"status": "running", "last_resumed_at": now, "paused_at": None, "updated_at": now}},
         )
         await self._schedule_session_timeout(interaction.user.id, remaining)
 

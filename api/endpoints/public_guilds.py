@@ -16,7 +16,7 @@ def register(app, deps):
             return jsonify({"error": "Invalid page parameter"}), 400
         per_page = 50
 
-        guilds = snapshot["guilds"]
+        guilds = snapshot.get("guilds", [])
         if query:
             terms = [term for term in re.split(r"\s+", query) if term]
 
@@ -41,10 +41,10 @@ def register(app, deps):
                     "has_prev": page > 1,
                 },
                 "totals": {
-                    "guilds": snapshot["total_guilds"],
-                    "users": snapshot["total_users"],
-                    "global_message_count": snapshot["global_message_count"],
-                    "uptime_seconds": snapshot["uptime_seconds"],
+                    "guilds": snapshot.get("total_guilds", len(guilds)),
+                    "users": snapshot.get("total_users", 0),
+                    "global_message_count": snapshot.get("global_message_count", 0),
+                    "uptime_seconds": snapshot.get("uptime_seconds", 0),
                 },
             }
         )
