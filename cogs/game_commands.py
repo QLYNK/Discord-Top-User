@@ -20,6 +20,8 @@ _game_db = _mongo_client["LeaderboardBotDB"]
 keywords_col = _game_db["GameKeywords"]
 tad_col = _game_db["TruthOrDare"]
 quiz_col = _game_db["QuizQuestions"]
+pomodoro_profiles_col = _game_db["PomodoroProfiles"]
+pomodoro_sessions_col = _game_db["PomodoroSessions"]
 
 APP_LINK = "https://deepdey.vercel.app/"
 INSTA_LINK = "https://deepdey.vercel.app/insta"
@@ -2205,18 +2207,76 @@ class GameCommands(commands.Cog):
         wins = profile.get("wins", 0)
         losses = profile.get("losses", 0)
         win_rate = ((wins / total_games) * 100) if total_games else 0.0
+        member = interaction.guild.get_member(interaction.user.id)
+
+        join_time = "Unknown"
+        status_text = "Unknown"
+        if member:
+            if member.joined_at:
+                join_ts = int(member.joined_at.timestamp())
+                join_time = f"<t:{join_ts}:F> • <t:{join_ts}:R>"
+            status_text = str(member.status).replace("_", " ").title()
+
+        pomodoro_profile = await pomodoro_profiles_col.find_one({"user_id": {"$in": db.user_id_variants(interaction.user.id)}})
+        if not pomodoro_profile:
+            pomodoro_profile = {
+                "work_minutes": 25,
+                "short_break_minutes": 5,
+                "long_break_minutes": 15,
+                "cycles_before_long_break": 4,
+                "lifetime_focus_minutes": 0.0,
+            }
+
+        pomodoro_profile_summary = (
+            f"Work: {int(pomodoro_profile.get('work_minutes', 25))}m\n"
+            f"Short Break: {int(pomodoro_profile.get('short_break_minutes', 5))}m\n"
+            f"Long Break: {int(pomodoro_profile.get('long_break_minutes', 15))}m\n"
+            f"Cycles: {int(pomodoro_profile.get('cycles_before_long_break', 4))}\n"
+            f"Lifetime Focus: {int(float(pomodoro_profile.get('lifetime_focus_minutes', 0.0)) * 60)}s"
+        )
+
+        session = await pomodoro_sessions_col.find_one({"user_id": {"$in": db.user_id_variants(interaction.user.id)}})
+        if session:
+            now = datetime.now(timezone.utc)
+            status = str(session.get("status", "unknown")).title()
+            remaining = int(session.get("remaining_seconds", 0))
+            focused = int(session.get("focused_seconds_accum", 0))
+            last_resumed_at = session.get("last_resumed_at")
+            if session.get("status") == "running" and isinstance(last_resumed_at, datetime):
+                elapsed = max(0, int((now - last_resumed_at).total_seconds()))
+                remaining = max(0, remaining - elapsed)
+                focused += elapsed
+
+            started_at = session.get("started_at")
+            updated_at = session.get("updated_at")
+            started_line = f"<t:{int(started_at.timestamp())}:R>" if isinstance(started_at, datetime) else "Unknown"
+            updated_line = f"<t:{int(updated_at.timestamp())}:R>" if isinstance(updated_at, datetime) else "Unknown"
+            pomodoro_session_summary = (
+                f"State: {status}\n"
+                f"Task: {str(session.get('task', 'Focus session'))[:120]}\n"
+                f"Remaining: {remaining // 60}m {remaining % 60}s\n"
+                f"Focused: {focused // 60}m {focused % 60}s\n"
+                f"Started: {started_line}\n"
+                f"Last Update: {updated_line}"
+            )
+        else:
+            pomodoro_session_summary = "No active Pomodoro session."
 
         embed = discord.Embed(
             title=f"📊 {interaction.user.display_name}'s Profile",
             color=0x5865F2,
         )
-        embed.add_field(name="Points", value=str(profile.get("points", 0)), inline=True)
+        embed.add_field(name="Total Points", value=str(profile.get("points", 0)), inline=True)
+        embed.add_field(name="Join Time", value=join_time, inline=True)
+        embed.add_field(name="Status", value=status_text, inline=True)
         embed.add_field(name="Wins", value=str(wins), inline=True)
         embed.add_field(name="Losses", value=str(losses), inline=True)
         embed.add_field(name="Total Games", value=str(total_games), inline=True)
         embed.add_field(name="Win Rate", value=f"{win_rate:.2f}%", inline=True)
         embed.add_field(name="Global Rank", value=f"#{global_rank}", inline=True)
         embed.add_field(name="Server Rank", value=f"#{server_rank}", inline=True)
+        embed.add_field(name="Pomodoro Profile", value=pomodoro_profile_summary, inline=False)
+        embed.add_field(name="Pomodoro Status", value=pomodoro_session_summary, inline=False)
         embed.set_footer(text="an app by deep")
         await interaction.followup.send(embed=embed, view=_branding_view())
 

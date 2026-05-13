@@ -6,7 +6,7 @@ def register(app, deps):
     @deps["api_json_guard"]
     def public_guild_detail(guild_id: int):
         snapshot = deps["get_discovery_snapshot"]()
-        for guild in snapshot["guilds"]:
+        for guild in snapshot.get("guilds", []):
             if int(guild.get("id", 0)) == guild_id:
                 return jsonify({"guild": guild})
         return jsonify({"error": "Guild not found"}), 404

@@ -36,13 +36,18 @@ Discord-Top-User is a full bot platform that combines:
 - Fast interaction games (e.g., scramble/math/toss/RPS/TTT/quiz/guessing).
 - Auto-game scheduler with role pinging and instant winner resolution.
 - Points + profile rank updates with telemetry logging.
+- `/myprofile` shows total points, join time, member status, global/server ranking, and Pomodoro snapshot.
 
 ### 4) Utilities
 - Keyword auto-reply and managed content administration.
 - Utility commands for productivity and common server workflows.
 - Secure dashboard routes protected by password session auth.
 
-### 5) Security & Reliability
+### 5) Productivity (AFK + Pomodoro)
+- Deep-work profile management with configurable work/break cycles.
+- `/pomodoro status` returns live session state, remaining/focused time, and latest update timestamps.
+
+### 6) Security & Reliability
 - Password-gated sensitive actions.
 - Telemetry-backed exception logging.
 - API safety wrappers and resilient fallback behavior.
