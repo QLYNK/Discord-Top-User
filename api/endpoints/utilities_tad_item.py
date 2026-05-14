@@ -7,7 +7,7 @@ def register(app, deps):
     @deps["require_utilities_auth"]
     def delete_tad(tad_id: str):
         tad_col = deps["tad_col"]
-        if not tad_col:
+        if tad_col is None:
             return jsonify({"error": "MONGO_URI is not configured"}), 503
         result = tad_col.delete_one(deps["coerce_id_query"](tad_id))
         if result.deleted_count == 0:

@@ -7,7 +7,7 @@ def register(app, deps):
     @deps["require_utilities_auth"]
     def list_quiz():
         quiz_col = deps["quiz_col"]
-        if not quiz_col:
+        if quiz_col is None:
             return jsonify({"error": "MONGO_URI is not configured"}), 503
         docs = list(quiz_col.find({}, {"question": 1, "options": 1, "correct_answer": 1}))
         return jsonify(
@@ -29,7 +29,7 @@ def register(app, deps):
     @deps["require_utilities_auth"]
     def create_quiz():
         quiz_col = deps["quiz_col"]
-        if not quiz_col:
+        if quiz_col is None:
             return jsonify({"error": "MONGO_URI is not configured"}), 503
         data = request.get_json(silent=True) or {}
         question = (data.get("question") or "").strip()
