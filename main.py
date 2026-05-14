@@ -5,7 +5,7 @@ import os
 import sys
 import json # Imports me add kar lena
 import secrets
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import aiohttp
 from dotenv import load_dotenv
 
@@ -34,6 +34,34 @@ bot.start_time = datetime.now()
 
 # RAM Buffer (6k members ke liye memory store)
 message_buffer = {}
+
+
+def _safe_int(value, default: int) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _to_utc_naive(dt_value):
+    if not isinstance(dt_value, datetime):
+        return None
+    if dt_value.tzinfo:
+        return dt_value.astimezone(timezone.utc).replace(tzinfo=None)
+    return dt_value
+
+
+def _has_custom_result_time(settings: dict) -> bool:
+    return "result_hour" in settings or "result_minute" in settings or "next_result_time" in settings
+
+
+def _compute_next_result_time(settings: dict, cycle_start: datetime, interval_days: int) -> datetime:
+    if _has_custom_result_time(settings):
+        hour = max(0, min(_safe_int(settings.get("result_hour", cycle_start.hour), cycle_start.hour), 23))
+        minute = max(0, min(_safe_int(settings.get("result_minute", cycle_start.minute), cycle_start.minute), 59))
+        next_date = (cycle_start + timedelta(days=interval_days)).date()
+        return datetime(next_date.year, next_date.month, next_date.day, hour, minute, 0, 0)
+    return cycle_start + timedelta(days=interval_days)
 
 
 def _dashboard_telemetry_bridge(payload: dict):
@@ -246,26 +274,46 @@ async def leaderboard_loop():
         guild = bot.get_guild(guild_id)
         if not guild: continue
 
-        interval_days = settings.get("interval_days", 7)
-        last_reset = settings.get("last_reset_time")
+        interval_days = max(1, _safe_int(settings.get("interval_days", 7), 7))
+        cycle_start = _to_utc_naive(settings.get("counting_start_time")) or _to_utc_naive(settings.get("last_reset_time"))
 
-        # Agar last_reset None hai, toh abhi ka time set kardo (first run)
-        if not last_reset:
-            await db.settings_col.update_one({"guild_id": guild_id}, {"$set": {"last_reset_time": now}})
+        if not cycle_start:
+            cycle_start = now
+            await db.settings_col.update_one(
+                {"guild_id": guild_id},
+                {"$set": {"counting_start_time": cycle_start, "last_reset_time": cycle_start}},
+            )
             continue
 
+        if now < cycle_start:
+            continue
+
+        next_result = _to_utc_naive(settings.get("next_result_time")) or _compute_next_result_time(settings, cycle_start, interval_days)
+
         # Check agar interval khatam ho gaya
-        if now >= last_reset + timedelta(days=interval_days):
+        if now >= next_result:
             await process_leaderboard(guild, settings)
-            # Update last reset time
-            await db.settings_col.update_one({"guild_id": guild_id}, {"$set": {"last_reset_time": now}})
+            sent_at = datetime.utcnow()
+            next_cycle_start = sent_at
+            next_cycle_result = _compute_next_result_time(settings, next_cycle_start, interval_days)
+            await db.settings_col.update_one(
+                {"guild_id": guild_id},
+                {
+                    "$set": {
+                        "last_result_sent_time": sent_at,
+                        "counting_start_time": next_cycle_start,
+                        "last_reset_time": next_cycle_start,
+                        "next_result_time": next_cycle_result,
+                    }
+                },
+            )
 
 async def process_leaderboard(guild: discord.Guild, settings: dict):
     """Automatically logs bhejta hai, role deta hai aur list post karta hai."""
     announcement_channel = guild.get_channel(settings.get("announcement_channel_id"))
     logs_channel = guild.get_channel(settings.get("logs_channel_id"))
     role = guild.get_role(settings.get("reward_role_id"))
-    top_count = settings.get("top_count", 3)
+    top_count = max(1, min(_safe_int(settings.get("top_count", 3), 3), 25))
 
     if not announcement_channel: return
 
