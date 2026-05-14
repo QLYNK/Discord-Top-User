@@ -25,7 +25,16 @@ intents = discord.Intents.default()
 intents.message_content = True
 intents.members = True
 intents.presences = True
-bot = commands.Bot(command_prefix="!", intents=intents, help_command=None)
+
+
+async def _dynamic_prefix(bot_instance: commands.Bot, message: discord.Message):
+    user_id = getattr(getattr(message, "author", None), "id", 0)
+    guild_id = getattr(getattr(message, "guild", None), "id", None)
+    prefixes = await db.get_effective_prefixes(user_id=user_id, guild_id=guild_id)
+    return commands.when_mentioned_or(*prefixes)(bot_instance, message)
+
+
+bot = commands.Bot(command_prefix=_dynamic_prefix, intents=intents, help_command=None)
 install_global_branding_enforcer()
 keep_alive.register_bot(bot)
 

@@ -13,6 +13,7 @@ db = client["LeaderboardBotDB"]
 settings_col = db["GuildSettings"]
 activity_col = db["ActivityData"]
 user_profiles_col = db["user_profiles"]
+user_prefixes_col = db["UserPrefixes"]
 
 
 def _default_user_profile(user_id: int) -> dict:
@@ -58,6 +59,65 @@ async def get_guild_settings(guild_id: int):
         }
         await settings_col.insert_one(settings)
     return settings
+
+
+async def get_server_prefix(guild_id: int) -> str | None:
+    settings = await settings_col.find_one({"guild_id": int(guild_id)}, {"custom_prefix": 1})
+    value = (settings or {}).get("custom_prefix")
+    if isinstance(value, str) and value.strip():
+        return value
+    return None
+
+
+async def set_server_prefix(guild_id: int, prefix: str) -> None:
+    await settings_col.update_one(
+        {"guild_id": int(guild_id)},
+        {"$set": {"custom_prefix": prefix}},
+        upsert=True,
+    )
+
+
+async def clear_server_prefix(guild_id: int) -> None:
+    await settings_col.update_one({"guild_id": int(guild_id)}, {"$unset": {"custom_prefix": ""}})
+
+
+async def get_user_prefix(user_id: int) -> str | None:
+    doc = await user_prefixes_col.find_one({"user_id": int(user_id)}, {"prefix": 1})
+    value = (doc or {}).get("prefix")
+    if isinstance(value, str) and value.strip():
+        return value
+    return None
+
+
+async def set_user_prefix(user_id: int, prefix: str) -> None:
+    await user_prefixes_col.update_one(
+        {"user_id": int(user_id)},
+        {"$set": {"prefix": prefix}},
+        upsert=True,
+    )
+
+
+async def clear_user_prefix(user_id: int) -> None:
+    await user_prefixes_col.delete_one({"user_id": int(user_id)})
+
+
+async def get_effective_prefixes(user_id: int, guild_id: int | None = None) -> list[str]:
+    prefixes: list[str] = ["!"]
+    user_prefix = await get_user_prefix(user_id)
+    if user_prefix:
+        prefixes.append(user_prefix)
+    if guild_id is not None:
+        server_prefix = await get_server_prefix(guild_id)
+        if server_prefix:
+            prefixes.append(server_prefix)
+    seen = set()
+    unique = []
+    for prefix in prefixes:
+        if prefix in seen:
+            continue
+        seen.add(prefix)
+        unique.append(prefix)
+    return unique
 
 async def update_guild_settings(guild_id: int, data: dict):
     """Server ki settings ko update karta hai (jaise naya channel ya role set karna)."""

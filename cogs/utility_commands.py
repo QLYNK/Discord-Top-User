@@ -832,6 +832,103 @@ class UtilityCommands(commands.Cog):
         await db.update_guild_settings(interaction.guild_id, {"utilities_logs_channel_id": channel.id})
         await interaction.followup.send(f"Utilities logs channel set to {channel.mention}.")
 
+    @app_commands.command(name="prefix", description="View/set/reset your user or server command prefix")
+    @app_commands.describe(
+        scope="Choose whether to configure user prefix or server prefix",
+        prefix="Leave empty to view current settings. Use reset/clear/default to remove custom prefix.",
+    )
+    @app_commands.choices(
+        scope=[
+            app_commands.Choice(name="User", value="user"),
+            app_commands.Choice(name="Server", value="server"),
+        ]
+    )
+    async def prefix(
+        self,
+        interaction: discord.Interaction,
+        scope: app_commands.Choice[str],
+        prefix: str | None = None,
+    ):
+        scope_value = scope.value
+        if scope_value == "server" and not interaction.guild:
+            await interaction.response.send_message("Server prefix can only be configured inside a server.", ephemeral=True)
+            return
+        if scope_value == "server":
+            member = interaction.user if isinstance(interaction.user, discord.Member) else None
+            if not member or not member.guild_permissions.manage_guild:
+                await interaction.response.send_message(
+                    "You need **Manage Server** permission to update the server prefix.",
+                    ephemeral=True,
+                )
+                return
+
+        if not prefix:
+            user_prefix = await db.get_user_prefix(interaction.user.id)
+            server_prefix = await db.get_server_prefix(interaction.guild_id) if interaction.guild_id else None
+            effective = await db.get_effective_prefixes(interaction.user.id, interaction.guild_id)
+            embed = discord.Embed(title="Command Prefix Settings", color=0x5865F2)
+            embed.add_field(name="Default Prefix", value="`!`", inline=True)
+            embed.add_field(name="User Prefix", value=f"`{user_prefix}`" if user_prefix else "`Not set`", inline=True)
+            embed.add_field(name="Server Prefix", value=f"`{server_prefix}`" if server_prefix else "`Not set`", inline=True)
+            embed.add_field(
+                name="Prefixes You Can Use Here",
+                value=", ".join(f"`{item}`" for item in effective) if effective else "`!`",
+                inline=False,
+            )
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+
+        normalized = prefix
+        if len(normalized) > 32:
+            await interaction.response.send_message("Prefix length must be 32 characters or fewer.", ephemeral=True)
+            return
+        if normalized.strip() == "":
+            await interaction.response.send_message("Prefix cannot be empty.", ephemeral=True)
+            return
+        if any(ch.isspace() for ch in normalized):
+            await interaction.response.send_message("Prefix cannot contain spaces.", ephemeral=True)
+            return
+
+        lowered = normalized.lower()
+        if lowered in {"reset", "clear", "default"}:
+            if scope_value == "server":
+                await db.clear_server_prefix(interaction.guild_id)
+                target_text = f"server **{interaction.guild.name}**"
+            else:
+                await db.clear_user_prefix(interaction.user.id)
+                target_text = "your user profile"
+            effective = await db.get_effective_prefixes(interaction.user.id, interaction.guild_id)
+            await interaction.response.send_message(
+                (
+                    f"✅ Custom prefix removed for {target_text}.\n"
+                    f"You can now use: {', '.join(f'`{item}`' for item in effective)}"
+                ),
+                ephemeral=True,
+            )
+            return
+
+        if scope_value == "server":
+            await db.set_server_prefix(interaction.guild_id, normalized)
+            target_text = f"server **{interaction.guild.name}**"
+        else:
+            await db.set_user_prefix(interaction.user.id, normalized)
+            target_text = "your user profile"
+
+        effective = await db.get_effective_prefixes(interaction.user.id, interaction.guild_id)
+        await interaction.response.send_message(
+            (
+                f"✅ Prefix set to `{normalized}` for {target_text}.\n"
+                f"You can now use: {', '.join(f'`{item}`' for item in effective)}"
+            ),
+            ephemeral=True,
+        )
+        await self._emit_utility_logs(
+            interaction,
+            activity_type="Prefix Updated",
+            details=f"{scope_value.title()} prefix updated.",
+            fields=[("Prefix", normalized[:32], True)],
+        )
+
     @app_commands.command(name="stats", description="Show server and bot statistics")
     async def stats(self, interaction: discord.Interaction):
         guild = interaction.guild

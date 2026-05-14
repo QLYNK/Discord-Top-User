@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 
 import discord
 from discord import app_commands
-from discord.ext import commands
+from discord.ext import commands, tasks
 
 import database as db
 from database import client as mongo_client
@@ -216,6 +216,7 @@ class PomodoroProfileModal(discord.ui.Modal):
                 },
                 "$setOnInsert": {
                     "lifetime_focus_minutes": 0.0,
+                    "lifetime_sessions": 0,
                 },
             },
             upsert=True,
@@ -243,11 +244,13 @@ class ProductivityCommands(commands.Cog):
         self.bot = bot
         self._pomodoro_tasks: dict[int, asyncio.Task] = {}
         self._notice_cooldowns: dict[tuple[int, str], float] = {}
+        self.pomodoro_progress_updates.start()
 
     def cog_unload(self) -> None:
         for task in self._pomodoro_tasks.values():
             if not task.done():
                 task.cancel()
+        self.pomodoro_progress_updates.cancel()
 
     async def _safe_dm(self, user: discord.abc.User, content: str | None = None, embed: discord.Embed | None = None) -> None:
         try:
@@ -377,10 +380,23 @@ class ProductivityCommands(commands.Cog):
             "long_break_minutes": 15,
             "cycles_before_long_break": 4,
             "lifetime_focus_minutes": 0.0,
+            "lifetime_sessions": 0,
             "updated_at": _utc_now(),
         }
         await pomodoro_profiles_col.insert_one(default_profile)
         return default_profile
+
+    @staticmethod
+    def _session_timing_snapshot(session: dict, now: datetime | None = None) -> tuple[int, int]:
+        now = now or _utc_now()
+        remaining = int(session.get("remaining_seconds", 0))
+        focused = int(session.get("focused_seconds_accum", 0))
+        last_resumed_at = session.get("last_resumed_at")
+        if session.get("status") == "running" and isinstance(last_resumed_at, datetime):
+            elapsed = max(0, int((now - last_resumed_at).total_seconds()))
+            remaining = max(0, remaining - elapsed)
+            focused += elapsed
+        return remaining, focused
 
     async def _append_missed_to_afk(self, target_doc: dict, message: discord.Message):
         entry = {
@@ -503,6 +519,7 @@ class ProductivityCommands(commands.Cog):
             {
                 "$inc": {
                     "lifetime_focus_minutes": focused_minutes,
+                    "lifetime_sessions": 1,
                 },
                 "$set": {"updated_at": _utc_now()},
             },
@@ -574,6 +591,7 @@ class ProductivityCommands(commands.Cog):
             "last_resumed_at": _utc_now(),
             "started_at": _utc_now(),
             "paused_at": None,
+            "last_progress_dm_at": _utc_now(),
             "missed": [],
             "updated_at": _utc_now(),
         }
@@ -600,6 +618,49 @@ class ProductivityCommands(commands.Cog):
             fields=[("Task", task_reason[:200], False)],
             jump_url=interaction.channel.jump_url if isinstance(interaction.channel, discord.TextChannel) else None,
         )
+
+    @tasks.loop(minutes=1)
+    async def pomodoro_progress_updates(self):
+        now = _utc_now()
+        async for session in pomodoro_sessions_col.find({"status": "running"}):
+            user_id = int(session.get("user_id", 0) or 0)
+            if user_id <= 0:
+                continue
+            last_progress = session.get("last_progress_dm_at")
+            base_time = last_progress if isinstance(last_progress, datetime) else session.get("started_at")
+            if isinstance(base_time, datetime) and (now - base_time).total_seconds() < 600:
+                continue
+
+            remaining, focused = self._session_timing_snapshot(session, now)
+            if remaining <= 0:
+                continue
+
+            user = self.bot.get_user(user_id)
+            if not user:
+                try:
+                    user = await self.bot.fetch_user(user_id)
+                except Exception:
+                    user = None
+            if not user:
+                continue
+
+            await self._safe_dm(
+                user,
+                (
+                    "⏱️ Pomodoro progress update\n"
+                    f"Task: {str(session.get('task', 'Focus session'))[:120]}\n"
+                    f"Remaining: {remaining // 60}m {remaining % 60}s\n"
+                    f"Focused: {focused // 60}m {focused % 60}s"
+                ),
+            )
+            await pomodoro_sessions_col.update_one(
+                {"_id": session["_id"]},
+                {"$set": {"last_progress_dm_at": now, "updated_at": now}},
+            )
+
+    @pomodoro_progress_updates.before_loop
+    async def before_pomodoro_progress_updates(self):
+        await self.bot.wait_until_ready()
 
     # -------------------- Admin log channel config --------------------
 
@@ -683,32 +744,31 @@ class ProductivityCommands(commands.Cog):
         embed.add_field(name="Work Minutes", value=str(profile.get("work_minutes", 25)), inline=True)
         embed.add_field(name="Short Break", value=f"{profile.get('short_break_minutes', 5)} min", inline=True)
         embed.add_field(name="Long Break", value=f"{profile.get('long_break_minutes', 15)} min", inline=True)
+        embed.add_field(name="Cycles Before Long Break", value=str(profile.get("cycles_before_long_break", 4)), inline=True)
+        lifetime_minutes = float(profile.get("lifetime_focus_minutes", 0.0))
+        lifetime_sessions = int(profile.get("lifetime_sessions", 0))
+        embed.add_field(name="Lifetime Focus", value=_format_hms(int(lifetime_minutes * 60)), inline=False)
+        embed.add_field(name="Completed Sessions", value=str(lifetime_sessions), inline=True)
 
         if not session:
             embed.add_field(name="Session", value="No active or paused focus session.", inline=False)
-            lifetime_minutes = float(profile.get("lifetime_focus_minutes", 0.0))
-            embed.add_field(name="Lifetime Focus", value=_format_hms(int(lifetime_minutes * 60)), inline=False)
             await interaction.response.send_message(embed=embed, ephemeral=True)
             return
 
         now = _utc_now()
         status = str(session.get("status", "unknown")).title()
-        remaining = int(session.get("remaining_seconds", 0))
-        focused = int(session.get("focused_seconds_accum", 0))
-        last_resumed_at = session.get("last_resumed_at")
-        if session.get("status") == "running" and isinstance(last_resumed_at, datetime):
-            elapsed = max(0, int((now - last_resumed_at).total_seconds()))
-            remaining = max(0, remaining - elapsed)
-            focused += elapsed
+        remaining, focused = self._session_timing_snapshot(session, now)
 
         started_at = session.get("started_at")
         updated_at = session.get("updated_at")
         started_text = f"<t:{int(started_at.timestamp())}:F> • <t:{int(started_at.timestamp())}:R>" if isinstance(started_at, datetime) else "Unknown"
         updated_text = f"<t:{int(updated_at.timestamp())}:F> • <t:{int(updated_at.timestamp())}:R>" if isinstance(updated_at, datetime) else "Unknown"
+        missed_count = len(session.get("missed", []))
 
         embed.add_field(name="Session State", value=status, inline=True)
         embed.add_field(name="Remaining", value=f"{remaining // 60}m {remaining % 60}s", inline=True)
         embed.add_field(name="Focused", value=f"{focused // 60}m {focused % 60}s", inline=True)
+        embed.add_field(name="Missed Pings Stored", value=str(missed_count), inline=True)
         embed.add_field(name="Task", value=str(session.get("task", "Focus session"))[:1024], inline=False)
         embed.add_field(name="Started", value=started_text, inline=False)
         embed.add_field(name="Last Update", value=updated_text, inline=False)
@@ -768,7 +828,15 @@ class ProductivityCommands(commands.Cog):
         now = _utc_now()
         await pomodoro_sessions_col.update_one(
             {"user_id": interaction.user.id},
-            {"$set": {"status": "running", "last_resumed_at": now, "paused_at": None, "updated_at": now}},
+            {
+                "$set": {
+                    "status": "running",
+                    "last_resumed_at": now,
+                    "paused_at": None,
+                    "last_progress_dm_at": now,
+                    "updated_at": now,
+                }
+            },
         )
         await self._schedule_session_timeout(interaction.user.id, remaining)
 
@@ -824,6 +892,7 @@ class ProductivityCommands(commands.Cog):
         embed.add_field(name="Long Break Minutes", value=str(profile.get("long_break_minutes", 15)), inline=True)
         embed.add_field(name="Cycles Before Long Break", value=str(profile.get("cycles_before_long_break", 4)), inline=True)
         embed.add_field(name="Lifetime Focus Time", value=_format_hms(lifetime_seconds), inline=False)
+        embed.add_field(name="Completed Sessions", value=str(int(profile.get("lifetime_sessions", 0))), inline=True)
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
     @commands.Cog.listener()
@@ -846,6 +915,10 @@ class ProductivityCommands(commands.Cog):
                     "Stay disciplined and get back to work. Use `/afk end` if you are truly done."
                 )
                 await self._safe_dm(message.author, warning)
+                try:
+                    await message.channel.send(f"{message.author.mention} {warning}")
+                except Exception:
+                    pass
 
         focus_doc = await pomodoro_sessions_col.find_one({"user_id": message.author.id})
         if focus_doc and focus_doc.get("status") == "running" and focus_doc.get("guild_id") == message.guild.id:
@@ -906,6 +979,23 @@ class ProductivityCommands(commands.Cog):
         ).to_list(length=None)
         for target in focus_targets:
             await self._append_missed_to_session(target, message)
+            if not self._should_send_notice(target["user_id"], "focus_ping_notice", 15):
+                continue
+            status = str(target.get("status", "running")).title()
+            remaining, focused = self._session_timing_snapshot(target)
+            user_obj = message.guild.get_member(target["user_id"]) or self.bot.get_user(target["user_id"])
+            user_label = user_obj.display_name if user_obj else f"User {target['user_id']}"
+            try:
+                await message.reply(
+                    (
+                        f"🔕 {user_label} is in a live focus session ({status}). Please avoid pinging right now.\n"
+                        f"Task: {str(target.get('task', 'Focus session'))[:120]}\n"
+                        f"Remaining: {remaining // 60}m {remaining % 60}s • Focused: {focused // 60}m {focused % 60}s"
+                    ),
+                    mention_author=False,
+                )
+            except Exception:
+                pass
 
 
 async def setup(bot: commands.Bot):
