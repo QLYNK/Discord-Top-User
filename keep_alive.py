@@ -4,7 +4,7 @@ import os
 import re
 import secrets
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from functools import wraps
 from pathlib import Path
 from threading import Thread
@@ -45,6 +45,7 @@ public_guilds_col = sync_mongo_client["LeaderboardBotDB"]["PublicGuildDiscovery"
 UPLOAD_ID_PATTERN = r"^[a-fA-F0-9-]{8,64}$"
 MAX_CHUNKS = 4096
 CHUNK_SIZE_BYTES = 10 * 1024 * 1024
+MAX_TOP_USERS_LIMIT = 25
 _UPLOAD_SESSION_KEYS: dict[str, str] = {}
 _TELEMETRY_HANDLER = None
 _BOT_REF = None
@@ -71,7 +72,7 @@ def _live_top_users_for_guild(guild, top_count: int) -> list[dict[str, Any]]:
     if activity_col is None:
         return []
 
-    safe_limit = max(1, min(25, _safe_int(top_count, 3)))
+    safe_limit = max(1, min(MAX_TOP_USERS_LIMIT, _safe_int(top_count, 3)))
     top_users: list[dict[str, Any]] = []
     try:
         cursor = activity_col.find({"guild_id": int(guild.id)}).sort("message_count", -1).limit(safe_limit)
@@ -150,8 +151,7 @@ def _refresh_guild_cache() -> None:
     if not _BOT_REF:
         if public_guilds_col is not None:
             try:
-                docs = list(public_guilds_col.find({}, {"_id": 0}))
-                docs.sort(key=lambda x: str(x.get("name", "")).lower())
+                docs = list(public_guilds_col.find({}, {"_id": 0}).sort("name", 1))
                 guilds_payload = [_normalize_public_guild_payload(doc) for doc in docs if _safe_int(doc.get("guild_id")) > 0]
                 if guilds_payload:
                     _GUILD_CACHE["updated_at"] = time.time()
@@ -214,12 +214,13 @@ def _refresh_guild_cache() -> None:
                     cached_doc = {}
 
             members = list(getattr(guild, "members", []) or [])
-            bots = sum(1 for m in members if getattr(m, "bot", False))
-            current_online = sum(
-                1
-                for m in members
-                if str(getattr(m, "status", "offline")) not in {"offline", "invisible"}
-            )
+            bots = 0
+            current_online = 0
+            for member in members:
+                if getattr(member, "bot", False):
+                    bots += 1
+                if str(getattr(member, "status", "offline")) not in {"offline", "invisible"}:
+                    current_online += 1
             member_plus_bots_count = _safe_int(guild.member_count, len(members))
             if member_plus_bots_count <= 0:
                 member_plus_bots_count = max(0, len(members))
@@ -279,7 +280,7 @@ def _refresh_guild_cache() -> None:
                                 "top_count": payload["top_count"],
                                 "top_users": payload["top_users"],
                                 "bot_integration_status": payload["bot_integration_status"],
-                                "updated_at": datetime.utcnow(),
+                                "updated_at": datetime.now(timezone.utc),
                             }
                         },
                         upsert=True,
