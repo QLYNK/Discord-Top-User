@@ -1,7 +1,7 @@
 from datetime import datetime
-from pathlib import Path
 
 from flask import jsonify, request
+from utils.audio_manager import ensure_tmp_dir
 
 
 def register(app, deps):
@@ -15,8 +15,7 @@ def register(app, deps):
         if not deps["SPACE_PASSWORD"]:
             return jsonify({"error": "SPACE_PASSWORD is not configured"}), 503
 
-        tmp_dir = (Path(__file__).resolve().parents[2] / "tmp").resolve()
-        tmp_dir.mkdir(parents=True, exist_ok=True)
+        tmp_dir = ensure_tmp_dir()
 
         if request.files.get("chunk"):
             return deps["handle_chunk_flow"](tmp_dir)

@@ -47,6 +47,7 @@ CHUNK_SIZE_BYTES = 10 * 1024 * 1024
 _UPLOAD_SESSION_KEYS: dict[str, str] = {}
 _TELEMETRY_HANDLER = None
 _BOT_REF = None
+FALLBACK_GUILD_NAME_PREFIX = "Unknown Server"
 _GUILD_CACHE: dict[str, Any] = {
     "updated_at": 0.0,
     "guilds": [],
@@ -85,7 +86,7 @@ def _refresh_guild_cache() -> None:
         guilds_payload = [
             {
                 "id": gid,
-                "name": f"Unknown Server {gid} (DB)",
+                "name": f"{FALLBACK_GUILD_NAME_PREFIX} {gid} (DB)",
                 "description": "",
                 "member_count": 0,
                 "icon_url": "",
