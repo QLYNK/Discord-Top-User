@@ -2237,20 +2237,27 @@ class GameCommands(commands.Cog):
 
         session = await pomodoro_sessions_col.find_one({"user_id": {"$in": db.user_id_variants(interaction.user.id)}})
         if session:
+            def _as_utc(value: object) -> datetime | None:
+                if not isinstance(value, datetime):
+                    return None
+                if value.tzinfo is None:
+                    return value.replace(tzinfo=timezone.utc)
+                return value.astimezone(timezone.utc)
+
             now = datetime.now(timezone.utc)
             status = str(session.get("status", "unknown")).title()
             remaining = int(session.get("remaining_seconds", 0))
             focused = int(session.get("focused_seconds_accum", 0))
-            last_resumed_at = session.get("last_resumed_at")
-            if session.get("status") == "running" and isinstance(last_resumed_at, datetime):
+            last_resumed_at = _as_utc(session.get("last_resumed_at"))
+            if session.get("status") == "running" and last_resumed_at:
                 elapsed = max(0, int((now - last_resumed_at).total_seconds()))
                 remaining = max(0, remaining - elapsed)
                 focused += elapsed
 
-            started_at = session.get("started_at")
-            updated_at = session.get("updated_at")
-            started_line = f"<t:{int(started_at.timestamp())}:R>" if isinstance(started_at, datetime) else "Unknown"
-            updated_line = f"<t:{int(updated_at.timestamp())}:R>" if isinstance(updated_at, datetime) else "Unknown"
+            started_at = _as_utc(session.get("started_at"))
+            updated_at = _as_utc(session.get("updated_at"))
+            started_line = f"<t:{int(started_at.timestamp())}:R>" if started_at else "Unknown"
+            updated_line = f"<t:{int(updated_at.timestamp())}:R>" if updated_at else "Unknown"
             pomodoro_session_summary = (
                 f"State: {status}\n"
                 f"Task: {str(session.get('task', 'Focus session'))[:120]}\n"

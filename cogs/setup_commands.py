@@ -48,9 +48,15 @@ class BackupLogsView(discord.ui.View):
         if not isinstance(interaction.user, discord.Member) or not interaction.user.guild_permissions.administrator:
             await interaction.response.send_message("❌ Sirf admins hi backup logs trigger kar sakte hain.", ephemeral=True)
             return
+        await interaction.response.defer(ephemeral=True, thinking=True)
         settings = await db.get_guild_settings(interaction.guild_id)
-        await self.cog.send_backup_logs(interaction.guild, settings, f"Manual backup by {interaction.user} via setup check")
-        await interaction.response.send_message("✅ Existing activity backup logs channel me bhej diya gaya (if configured).", ephemeral=True)
+        try:
+            await self.cog.send_backup_logs(interaction.guild, settings, f"Manual backup by {interaction.user} via setup check")
+        except Exception as exc:
+            print(f"[SetupCog] Backup from setup check failed: {exc}")
+            await interaction.followup.send("❌ Existing activity backup bhejte waqt error aaya.", ephemeral=True)
+            return
+        await interaction.followup.send("✅ Existing activity backup logs channel me bhej diya gaya (if configured).", ephemeral=True)
 
 
 class SetupCommands(commands.Cog):
