@@ -40,6 +40,7 @@ keywords_col = sync_mongo_client["LeaderboardBotDB"]["GameKeywords"] if sync_mon
 tad_col = sync_mongo_client["LeaderboardBotDB"]["TruthOrDare"] if sync_mongo_client else None
 quiz_col = sync_mongo_client["LeaderboardBotDB"]["QuizQuestions"] if sync_mongo_client else None
 activity_col = sync_mongo_client["LeaderboardBotDB"]["ActivityData"] if sync_mongo_client else None
+settings_col = sync_mongo_client["LeaderboardBotDB"]["GuildSettings"] if sync_mongo_client else None
 UPLOAD_ID_PATTERN = r"^[a-fA-F0-9-]{8,64}$"
 MAX_CHUNKS = 4096
 CHUNK_SIZE_BYTES = 10 * 1024 * 1024
@@ -65,8 +66,35 @@ def register_bot(bot):
 
 def _refresh_guild_cache() -> None:
     if not _BOT_REF:
+        guild_ids: set[int] = set()
+        if settings_col is not None:
+            try:
+                for row in settings_col.find({}, {"guild_id": 1}):
+                    gid = row.get("guild_id")
+                    if gid is not None:
+                        guild_ids.add(int(gid))
+            except Exception:
+                pass
+        if activity_col is not None:
+            try:
+                for gid in activity_col.distinct("guild_id"):
+                    if gid is not None:
+                        guild_ids.add(int(gid))
+            except Exception:
+                pass
+        guilds_payload = [
+            {
+                "id": gid,
+                "name": f"Server {gid}",
+                "description": "",
+                "member_count": 0,
+                "icon_url": "",
+                "bot_integration_status": "Database Sync",
+            }
+            for gid in sorted(guild_ids)
+        ]
         _GUILD_CACHE["updated_at"] = time.time()
-        _GUILD_CACHE["guilds"] = []
+        _GUILD_CACHE["guilds"] = guilds_payload
         _GUILD_CACHE["total_members"] = 0
         return
 

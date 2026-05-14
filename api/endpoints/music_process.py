@@ -15,7 +15,7 @@ def register(app, deps):
         if not deps["SPACE_PASSWORD"]:
             return jsonify({"error": "SPACE_PASSWORD is not configured"}), 503
 
-        tmp_dir = Path("./tmp")
+        tmp_dir = (Path(__file__).resolve().parents[2] / "tmp").resolve()
         tmp_dir.mkdir(parents=True, exist_ok=True)
 
         if request.files.get("chunk"):
