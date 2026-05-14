@@ -4,4 +4,4 @@ RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg && rm -r
 COPY requirements.txt .
 RUN pip install -r requirements.txt
 COPY . .
-CMD ["sh", "-c", "python website.py & web_pid=$!; SEPARATE_WEBSITE_PROCESS=1 python main.py & bot_pid=$!; wait -n $web_pid $bot_pid; exit_code=$?; kill $web_pid $bot_pid 2>/dev/null || true; wait $web_pid $bot_pid 2>/dev/null || true; exit $exit_code"]
+CMD ["sh", "-c", "python website.py & web_pid=$!; SEPARATE_WEBSITE_PROCESS=1 python main.py & bot_pid=$!; exit_code=0; while kill -0 $web_pid 2>/dev/null && kill -0 $bot_pid 2>/dev/null; do sleep 1; done; if ! kill -0 $web_pid 2>/dev/null; then wait $web_pid; exit_code=$?; else wait $bot_pid; exit_code=$?; fi; kill $web_pid $bot_pid 2>/dev/null || true; wait $web_pid $bot_pid 2>/dev/null || true; exit $exit_code"]
