@@ -7,7 +7,7 @@ def register(app, deps):
     @deps["require_music_auth"]
     def list_tracks():
         music_col = deps["music_col"]
-        if not music_col:
+        if music_col is None:
             return jsonify({"error": "MONGO_URI is not configured"}), 503
         try:
             limit = max(1, min(200, int(request.args.get("limit", 100))))

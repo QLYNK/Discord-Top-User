@@ -7,7 +7,7 @@ def register(app, deps):
     @deps["require_utilities_auth"]
     def update_keyword(kw_id: str):
         keywords_col = deps["keywords_col"]
-        if not keywords_col:
+        if keywords_col is None:
             return jsonify({"error": "MONGO_URI is not configured"}), 503
         data = request.get_json(silent=True) or {}
         trigger = (data.get("trigger") or "").strip().lower()
@@ -24,7 +24,7 @@ def register(app, deps):
     @deps["require_utilities_auth"]
     def delete_keyword(kw_id: str):
         keywords_col = deps["keywords_col"]
-        if not keywords_col:
+        if keywords_col is None:
             return jsonify({"error": "MONGO_URI is not configured"}), 503
         result = keywords_col.delete_one(deps["coerce_id_query"](kw_id))
         if result.deleted_count == 0:

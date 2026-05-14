@@ -106,7 +106,7 @@ def _get_discovery_snapshot() -> dict[str, Any]:
     total_users = int(_GUILD_CACHE.get("total_members", 0))
 
     global_message_count = 0
-    if activity_col:
+    if activity_col is not None:
         try:
             result = list(activity_col.aggregate([{"$group": {"_id": None, "total": {"$sum": "$message_count"}}}]))
             global_message_count = int(result[0]["total"]) if result else 0
@@ -249,6 +249,11 @@ def server_detail_page(guild_id: int):
 @app.route("/dashboard")
 def dashboard_page():
     return render_template_string(_HOME_HTML, initial_guild_id=None)
+
+
+@app.route("/favicon.ico")
+def favicon():
+    return "", 204
 
 
 @app.route("/music/login", methods=["GET", "POST"])

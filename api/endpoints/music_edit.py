@@ -7,7 +7,7 @@ def register(app, deps):
     @deps["require_music_auth"]
     def edit_track_post():
         music_col = deps["music_col"]
-        if not music_col:
+        if music_col is None:
             return jsonify({"error": "MONGO_URI is not configured"}), 503
 
         data = request.get_json(silent=True) or {}

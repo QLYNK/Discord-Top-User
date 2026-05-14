@@ -7,7 +7,7 @@ def register(app, deps):
     @deps["require_utilities_auth"]
     def list_keywords():
         keywords_col = deps["keywords_col"]
-        if not keywords_col:
+        if keywords_col is None:
             return jsonify({"error": "MONGO_URI is not configured"}), 503
         docs = list(keywords_col.find({}, {"trigger": 1, "reply": 1}))
         return jsonify({"keywords": [{"id": str(d["_id"]), "trigger": d.get("trigger", ""), "reply": d.get("reply", "")} for d in docs]})
@@ -17,7 +17,7 @@ def register(app, deps):
     @deps["require_utilities_auth"]
     def create_keyword():
         keywords_col = deps["keywords_col"]
-        if not keywords_col:
+        if keywords_col is None:
             return jsonify({"error": "MONGO_URI is not configured"}), 503
         data = request.get_json(silent=True) or {}
         trigger = (data.get("trigger") or "").strip().lower()

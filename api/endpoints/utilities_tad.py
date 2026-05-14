@@ -7,7 +7,7 @@ def register(app, deps):
     @deps["require_utilities_auth"]
     def list_tad():
         tad_col = deps["tad_col"]
-        if not tad_col:
+        if tad_col is None:
             return jsonify({"error": "MONGO_URI is not configured"}), 503
         docs = list(tad_col.find({}, {"type": 1, "text": 1}))
         return jsonify({"tad": [{"id": str(d["_id"]), "type": d.get("type", ""), "text": d.get("text", "")} for d in docs]})
@@ -17,7 +17,7 @@ def register(app, deps):
     @deps["require_utilities_auth"]
     def create_tad():
         tad_col = deps["tad_col"]
-        if not tad_col:
+        if tad_col is None:
             return jsonify({"error": "MONGO_URI is not configured"}), 503
         data = request.get_json(silent=True) or {}
         tad_type = (data.get("type") or "").strip().lower()

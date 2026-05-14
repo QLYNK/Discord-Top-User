@@ -10,7 +10,7 @@ def register(app, deps):
     @deps["require_music_auth"]
     def process_music():
         music_col = deps["music_col"]
-        if not music_col:
+        if music_col is None:
             return jsonify({"error": "MONGO_URI is not configured"}), 503
         if not deps["SPACE_PASSWORD"]:
             return jsonify({"error": "SPACE_PASSWORD is not configured"}), 503
