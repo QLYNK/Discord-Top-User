@@ -86,11 +86,11 @@ def _refresh_guild_cache() -> None:
         guilds_payload = [
             {
                 "id": gid,
-                "name": f"{FALLBACK_GUILD_LABEL} {gid} (DB)",
+                "name": f"{FALLBACK_GUILD_LABEL} {gid}",
                 "description": "",
                 "member_count": 0,
                 "icon_url": "",
-                "bot_integration_status": "Database Sync",
+                "bot_integration_status": "Bot Unavailable (DB Fallback)",
             }
             for gid in sorted(guild_ids)
         ]
