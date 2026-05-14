@@ -2,6 +2,7 @@ from .music_edit import register as register_music_edit
 from .music_process import register as register_music_process
 from .music_track_item import register as register_music_track_item
 from .music_tracks import register as register_music_tracks
+from .public_commands import register as register_public_commands
 from .public_guild_detail import register as register_public_guild_detail
 from .public_guilds import register as register_public_guilds
 from .stats import register as register_stats
@@ -17,6 +18,7 @@ from .utilities_tad_item import register as register_utilities_tad_item
 
 def register_api_endpoints(app, deps):
     register_stats(app, deps)
+    register_public_commands(app, deps)
     register_public_guilds(app, deps)
     register_public_guild_detail(app, deps)
     register_music_tracks(app, deps)
