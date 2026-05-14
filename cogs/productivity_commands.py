@@ -14,6 +14,8 @@ _prod_db = mongo_client["LeaderboardBotDB"]
 afks_col = _prod_db["AFKStates"]
 pomodoro_profiles_col = _prod_db["PomodoroProfiles"]
 pomodoro_sessions_col = _prod_db["PomodoroSessions"]
+PROGRESS_UPDATE_INTERVAL_SECONDS = 600
+FOCUS_PING_NOTICE_COOLDOWN_SECONDS = 15
 
 
 def _utc_now() -> datetime:
@@ -244,7 +246,10 @@ class ProductivityCommands(commands.Cog):
         self.bot = bot
         self._pomodoro_tasks: dict[int, asyncio.Task] = {}
         self._notice_cooldowns: dict[tuple[int, str], float] = {}
-        self.pomodoro_progress_updates.start()
+
+    async def cog_load(self) -> None:
+        if not self.pomodoro_progress_updates.is_running():
+            self.pomodoro_progress_updates.start()
 
     def cog_unload(self) -> None:
         for task in self._pomodoro_tasks.values():
@@ -628,7 +633,7 @@ class ProductivityCommands(commands.Cog):
                 continue
             last_progress = session.get("last_progress_dm_at")
             base_time = last_progress if isinstance(last_progress, datetime) else session.get("started_at")
-            if isinstance(base_time, datetime) and (now - base_time).total_seconds() < 600:
+            if isinstance(base_time, datetime) and (now - base_time).total_seconds() < PROGRESS_UPDATE_INTERVAL_SECONDS:
                 continue
 
             remaining, focused = self._session_timing_snapshot(session, now)
@@ -746,8 +751,9 @@ class ProductivityCommands(commands.Cog):
         embed.add_field(name="Long Break", value=f"{profile.get('long_break_minutes', 15)} min", inline=True)
         embed.add_field(name="Cycles Before Long Break", value=str(profile.get("cycles_before_long_break", 4)), inline=True)
         lifetime_minutes = float(profile.get("lifetime_focus_minutes", 0.0))
+        lifetime_seconds = int(lifetime_minutes * 60)
         lifetime_sessions = int(profile.get("lifetime_sessions", 0))
-        embed.add_field(name="Lifetime Focus", value=_format_hms(int(lifetime_minutes * 60)), inline=False)
+        embed.add_field(name="Lifetime Focus", value=_format_hms(lifetime_seconds), inline=False)
         embed.add_field(name="Completed Sessions", value=str(lifetime_sessions), inline=True)
 
         if not session:
@@ -979,7 +985,11 @@ class ProductivityCommands(commands.Cog):
         ).to_list(length=None)
         for target in focus_targets:
             await self._append_missed_to_session(target, message)
-            if not self._should_send_notice(target["user_id"], "focus_ping_notice", 15):
+            if not self._should_send_notice(
+                target["user_id"],
+                "focus_ping_notice",
+                FOCUS_PING_NOTICE_COOLDOWN_SECONDS,
+            ):
                 continue
             status = str(target.get("status", "running")).title()
             remaining, focused = self._session_timing_snapshot(target)

@@ -110,14 +110,7 @@ async def get_effective_prefixes(user_id: int, guild_id: int | None = None) -> l
         server_prefix = await get_server_prefix(guild_id)
         if server_prefix:
             prefixes.append(server_prefix)
-    seen = set()
-    unique = []
-    for prefix in prefixes:
-        if prefix in seen:
-            continue
-        seen.add(prefix)
-        unique.append(prefix)
-    return unique
+    return list(dict.fromkeys(prefixes))
 
 async def update_guild_settings(guild_id: int, data: dict):
     """Server ki settings ko update karta hai (jaise naya channel ya role set karna)."""
