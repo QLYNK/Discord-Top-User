@@ -1096,8 +1096,15 @@ class UtilityCommands(commands.Cog):
             return
 
         await self._ensure_member_cache(guild)
-        online = await self._online_count(guild)
-        bots = await self._bot_count(guild)
+        try:
+            online = await self._online_count(guild)
+        except Exception:
+            online = 0
+        try:
+            bots = await self._bot_count(guild)
+        except Exception:
+            bots = 0
+        total_members = int(guild.member_count or len(guild.members) or 0)
         embed = discord.Embed(
             title="🏛️ Server Information Hub",
             description=guild.description or "No server description set.",
@@ -1106,7 +1113,7 @@ class UtilityCommands(commands.Cog):
         if guild.icon:
             embed.set_thumbnail(url=guild.icon.url)
         embed.add_field(name="Server Name", value=guild.name, inline=True)
-        embed.add_field(name="Total Members", value=str(guild.member_count or 0), inline=True)
+        embed.add_field(name="Total Members", value=str(total_members), inline=True)
         embed.add_field(name="Online Members", value=str(online), inline=True)
         embed.add_field(name="Bot Count", value=str(bots), inline=True)
         if self.bot.user:

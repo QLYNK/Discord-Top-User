@@ -41,6 +41,8 @@ tad_col = sync_mongo_client["LeaderboardBotDB"]["TruthOrDare"] if sync_mongo_cli
 quiz_col = sync_mongo_client["LeaderboardBotDB"]["QuizQuestions"] if sync_mongo_client else None
 activity_col = sync_mongo_client["LeaderboardBotDB"]["ActivityData"] if sync_mongo_client else None
 settings_col = sync_mongo_client["LeaderboardBotDB"]["GuildSettings"] if sync_mongo_client else None
+notes_col = sync_mongo_client["LeaderboardBotDB"]["UtilityNotes"] if sync_mongo_client else None
+guild_public_col = sync_mongo_client["LeaderboardBotDB"]["GuildPublicSnapshots"] if sync_mongo_client else None
 UPLOAD_ID_PATTERN = r"^[a-fA-F0-9-]{8,64}$"
 MAX_CHUNKS = 4096
 CHUNK_SIZE_BYTES = 10 * 1024 * 1024
@@ -53,6 +55,7 @@ _GUILD_CACHE: dict[str, Any] = {
     "guilds": [],
     "total_members": 0,
 }
+BOT_INVITE_URL = "https://discord.com/oauth2/authorize?client_id=1503257840356163584&permissions=6835289926782017&integration_type=0&scope=bot"
 
 
 def register_telemetry_handler(handler):
@@ -67,6 +70,59 @@ def register_bot(bot):
 
 def _refresh_guild_cache() -> None:
     if not _BOT_REF:
+        db_guild_payload: list[dict[str, Any]] = []
+        if guild_public_col is not None:
+            try:
+                db_docs = list(
+                    guild_public_col.find(
+                        {},
+                        {
+                            "guild_id": 1,
+                            "name": 1,
+                            "description": 1,
+                            "icon_url": 1,
+                            "member_count": 1,
+                            "online_count": 1,
+                            "bot_count": 1,
+                            "human_count": 1,
+                            "member_plus_bots_count": 1,
+                            "top_count_selected": 1,
+                            "permanent_invite_link": 1,
+                            "server_link": 1,
+                        },
+                    ).sort("name", 1)
+                )
+                for doc in db_docs:
+                    gid = int(doc.get("guild_id", 0))
+                    if gid <= 0:
+                        continue
+                    db_guild_payload.append(
+                        {
+                            "id": str(gid),
+                            "name": str(doc.get("name") or f"{FALLBACK_GUILD_LABEL} {gid}"),
+                            "description": str(doc.get("description") or ""),
+                            "member_count": int(doc.get("member_count") or 0),
+                            "online_count": int(doc.get("online_count") or 0),
+                            "bot_count": int(doc.get("bot_count") or 0),
+                            "human_count": int(doc.get("human_count") or 0),
+                            "member_plus_bots_count": int(doc.get("member_plus_bots_count") or int(doc.get("member_count") or 0)),
+                            "top_count_selected": int(doc.get("top_count_selected") or 3),
+                            "icon_url": str(doc.get("icon_url") or ""),
+                            "permanent_invite_link": str(doc.get("permanent_invite_link") or ""),
+                            "server_link": str(doc.get("server_link") or f"/server/{gid}"),
+                            "invite_bot_url": BOT_INVITE_URL,
+                            "bot_integration_status": "Offline Cache (Last Synced)",
+                        }
+                    )
+            except Exception as exc:
+                app.logger.warning("GuildPublicSnapshots fallback query failed: %s", exc)
+
+        if db_guild_payload:
+            _GUILD_CACHE["updated_at"] = time.time()
+            _GUILD_CACHE["guilds"] = db_guild_payload
+            _GUILD_CACHE["total_members"] = sum(int(g.get("member_count", 0)) for g in db_guild_payload)
+            return
+
         guild_ids: set[int] = set()
         if settings_col is not None:
             try:
@@ -85,11 +141,19 @@ def _refresh_guild_cache() -> None:
                 app.logger.warning("ActivityData fallback query failed: %s", exc)
         guilds_payload = [
             {
-                "id": gid,
+                "id": str(gid),
                 "name": f"{FALLBACK_GUILD_LABEL} {gid}",
                 "description": "",
                 "member_count": 0,
+                "online_count": 0,
+                "bot_count": 0,
+                "human_count": 0,
+                "member_plus_bots_count": 0,
+                "top_count_selected": 3,
                 "icon_url": "",
+                "permanent_invite_link": "",
+                "server_link": f"/server/{gid}",
+                "invite_bot_url": BOT_INVITE_URL,
                 "bot_integration_status": "Bot Unavailable (DB Fallback)",
             }
             for gid in sorted(guild_ids)
@@ -101,20 +165,83 @@ def _refresh_guild_cache() -> None:
 
     guilds_payload = []
     total_members = 0
+    top_count_map: dict[int, int] = {}
+    if settings_col is not None:
+        try:
+            for row in settings_col.find({}, {"guild_id": 1, "top_count": 1}):
+                gid = row.get("guild_id")
+                if gid is None:
+                    continue
+                top_count_map[int(gid)] = max(1, int(row.get("top_count") or 3))
+        except Exception:
+            top_count_map = {}
     try:
         for guild in list(_BOT_REF.guilds):
             member_count = int(guild.member_count or 0)
             total_members += member_count
+            online_count = 0
+            bot_count = 0
+            human_count = max(0, member_count)
+            try:
+                if guild.chunked and guild.members:
+                    bot_count = sum(1 for m in guild.members if m.bot)
+                    human_count = sum(1 for m in guild.members if not m.bot)
+                    online_count = sum(
+                        1
+                        for m in guild.members
+                        if str(getattr(m, "status", "offline")) in {"online", "idle", "dnd"}
+                    )
+            except Exception:
+                bot_count = 0
+                human_count = max(0, member_count)
+                online_count = 0
+            top_count_selected = int(top_count_map.get(int(guild.id), 3))
+            vanity_code = str(getattr(guild, "vanity_url_code", "") or "").strip()
+            permanent_invite_link = f"https://discord.gg/{vanity_code}" if vanity_code else ""
+            payload = {
+                "id": str(guild.id),
+                "name": guild.name,
+                "description": str(getattr(guild, "description", "") or ""),
+                "member_count": member_count,
+                "online_count": online_count,
+                "bot_count": bot_count,
+                "human_count": human_count,
+                "member_plus_bots_count": member_count,
+                "top_count_selected": top_count_selected,
+                "icon_url": str(guild.icon.url) if guild.icon else "",
+                "permanent_invite_link": permanent_invite_link,
+                "server_link": f"/server/{guild.id}",
+                "invite_bot_url": BOT_INVITE_URL,
+                "bot_integration_status": "Connected",
+            }
             guilds_payload.append(
-                {
-                    "id": int(guild.id),
-                    "name": guild.name,
-                    "description": str(getattr(guild, "description", "") or ""),
-                    "member_count": member_count,
-                    "icon_url": str(guild.icon.url) if guild.icon else "",
-                    "bot_integration_status": "Connected",
-                }
+                payload
             )
+            if guild_public_col is not None:
+                try:
+                    guild_public_col.update_one(
+                        {"guild_id": int(guild.id)},
+                        {
+                            "$set": {
+                                "guild_id": int(guild.id),
+                                "name": payload["name"],
+                                "description": payload["description"],
+                                "icon_url": payload["icon_url"],
+                                "member_count": payload["member_count"],
+                                "online_count": payload["online_count"],
+                                "bot_count": payload["bot_count"],
+                                "human_count": payload["human_count"],
+                                "member_plus_bots_count": payload["member_plus_bots_count"],
+                                "top_count_selected": payload["top_count_selected"],
+                                "permanent_invite_link": payload["permanent_invite_link"],
+                                "server_link": payload["server_link"],
+                                "updated_at": datetime.utcnow(),
+                            }
+                        },
+                        upsert=True,
+                    )
+                except Exception:
+                    pass
         guilds_payload.sort(key=lambda x: x["name"].lower())
     except Exception:
         guilds_payload = []
@@ -272,7 +399,10 @@ def home():
 
 @app.route("/server/<int:guild_id>")
 def server_detail_page(guild_id: int):
-    return render_template_string(_HOME_HTML, initial_guild_id=guild_id)
+    return render_template_string(_HOME_HTML, initial_guild_id=str(guild_id))
+@app.route("/server/<guild_id>")
+def server_detail_page_string(guild_id: str):
+    return render_template_string(_HOME_HTML, initial_guild_id=str(guild_id))
 
 
 @app.route("/dashboard")
@@ -387,6 +517,7 @@ def _register_api_routes():
             "keywords_col": keywords_col,
             "tad_col": tad_col,
             "quiz_col": quiz_col,
+            "notes_col": notes_col,
             "SPACE_PASSWORD": SPACE_PASSWORD,
             "DEFAULT_ARTWORK": DEFAULT_ARTWORK,
             "convert_to_96k_mp3": convert_to_96k_mp3,
@@ -791,8 +922,8 @@ _HOME_HTML = """
             </div>
           </div>
           <div class="mt-4 flex gap-2">
-            <button onclick="openDetail(${server.id})" class="px-3 py-2 rounded bg-slate-800 hover:bg-slate-700 text-sm">View Details</button>
-            <a href="${INVITE_URL}" class="px-3 py-2 rounded bg-indigo-600 hover:bg-indigo-500 text-sm">Invite Bot</a>
+            <button onclick="openDetail('${server.id}')" class="px-3 py-2 rounded bg-slate-800 hover:bg-slate-700 text-sm">View Details</button>
+            <a href="${server.invite_bot_url || INVITE_URL}" class="px-3 py-2 rounded bg-indigo-600 hover:bg-indigo-500 text-sm">Invite Bot</a>
           </div>
         </article>`;
     }
@@ -821,10 +952,12 @@ _HOME_HTML = """
     }
 
     async function openDetail(guildId) {
+      const safeGuildId = String(guildId || "").trim();
+      if (!safeGuildId) return;
       const pane = document.getElementById("serverDetail");
       pane.classList.remove("hidden");
       pane.innerHTML = `<p class="text-slate-400">Loading server details...</p>`;
-      const res = await fetch(`/api/public/guilds/${guildId}`);
+      const res = await fetch(`/api/public/guilds/${encodeURIComponent(safeGuildId)}`);
       const data = await res.json();
       if (!res.ok) { pane.innerHTML = `<p class="text-red-400">${data.error || "Failed to fetch details."}</p>`; return; }
       const g = data.guild;
@@ -837,12 +970,17 @@ _HOME_HTML = """
             <p class="text-slate-400 mt-1">${g.description || "No public description available."}</p>
             <ul class="mt-3 text-sm text-slate-300 space-y-1">
               <li><strong>Member Count:</strong> ${fmtNumber(g.member_count)}</li>
+              <li><strong>Online:</strong> ${fmtNumber(g.online_count)}</li>
+              <li><strong>Bots:</strong> ${fmtNumber(g.bot_count)}</li>
+              <li><strong>Humans:</strong> ${fmtNumber(g.human_count)}</li>
+              <li><strong>Top X Selected:</strong> ${fmtNumber(g.top_count_selected)}</li>
+              <li><strong>Permanent Invite:</strong> ${g.permanent_invite_link ? `<a class="underline" href="${g.permanent_invite_link}" target="_blank" rel="noopener noreferrer">${g.permanent_invite_link}</a>` : "Not available"}</li>
               <li><strong>Integration Status:</strong> ${g.bot_integration_status}</li>
               <li><strong>Guild ID:</strong> ${g.id}</li>
             </ul>
           </div>
         </div>`;
-      history.replaceState({}, "", `/server/${guildId}`);
+      history.replaceState({}, "", `/server/${encodeURIComponent(safeGuildId)}`);
     }
 
     document.getElementById("searchInput").addEventListener("input", async (event) => { currentQuery = (event.target.value || "").trim(); currentPage = 1; await loadGuilds(); });
@@ -1018,6 +1156,7 @@ _UTILITIES_HTML = """
       <button onclick="showTab('keywords')" id="tab-keywords" class="tab-btn px-4 py-2 rounded-t bg-indigo-600 text-white">Keywords</button>
       <button onclick="showTab('tad')" id="tab-tad" class="tab-btn px-4 py-2 rounded-t bg-[#2b2d31] hover:bg-[#3f4147]">Truth or Dare</button>
       <button onclick="showTab('quiz')" id="tab-quiz" class="tab-btn px-4 py-2 rounded-t bg-[#2b2d31] hover:bg-[#3f4147]">Quiz</button>
+      <button onclick="showTab('notes')" id="tab-notes" class="tab-btn px-4 py-2 rounded-t bg-[#2b2d31] hover:bg-[#3f4147]">Notes</button>
     </div>
 
     <!-- Keywords Panel -->
@@ -1095,12 +1234,26 @@ _UTILITIES_HTML = """
         </div>
       </div>
     </div>
+
+    <!-- Notes Panel -->
+    <div id="panel-notes" class="space-y-4 hidden">
+      <div class="bg-[#2b2d31] p-4 rounded-xl border border-[#3f4147] space-y-3">
+        <h2 class="text-xl font-semibold">Add Public Note</h2>
+        <input id="noteAvatar" class="w-full p-3 rounded bg-[#1e1f22] border border-[#3f4147]" placeholder="Profile image URL (optional)" />
+        <textarea id="noteText" class="w-full p-3 rounded bg-[#1e1f22] border border-[#3f4147] min-h-[110px]" placeholder="Write a note..."></textarea>
+        <button onclick="createNote()" class="px-4 py-2 rounded bg-indigo-600 hover:bg-indigo-500">Add Note</button>
+      </div>
+      <div class="bg-[#2b2d31] p-4 rounded-xl border border-[#3f4147]">
+        <h2 class="text-xl font-semibold mb-3">Existing Notes</h2>
+        <div id="notesList" class="space-y-3"></div>
+      </div>
+    </div>
   </div>
 
 <script>
 // ── Tab switching ──────────────────────────────────────────────────────────
 function showTab(name) {
-  ['keywords','tad','quiz'].forEach(t => {
+  ['keywords','tad','quiz','notes'].forEach(t => {
     document.getElementById('panel-' + t).classList.toggle('hidden', t !== name);
     const btn = document.getElementById('tab-' + t);
     btn.className = t === name
@@ -1110,6 +1263,7 @@ function showTab(name) {
   if (name === 'keywords') refreshKeywords();
   if (name === 'tad') refreshTAD();
   if (name === 'quiz') refreshQuiz();
+  if (name === 'notes') refreshNotes();
 }
 
 async function reqJson(url, options) {
@@ -1262,8 +1416,78 @@ async function deleteQuiz(id) {
   await refreshQuiz();
 }
 
+// ── Notes ─────────────────────────────────────────────────────────────────
+let notes = [];
+async function refreshNotes() {
+  try {
+    const data = await reqJson('/api/utilities/notes');
+    notes = data.notes || [];
+    renderNotes();
+  } catch (err) {
+    alert(err.message || 'Failed to load notes');
+  }
+}
+function renderNotes() {
+  const list = document.getElementById('notesList');
+  list.innerHTML = '';
+  if (!notes.length) {
+    list.innerHTML = '<p class="text-slate-400 text-sm">No notes added yet.</p>';
+    return;
+  }
+  notes.forEach(n => {
+    const card = document.createElement('div');
+    card.className = 'rounded border border-[#3f4147] bg-[#1e1f22] p-3';
+    const avatar = n.profile_pic_url ? `<img src="${esc(n.profile_pic_url)}" alt="Profile" class="w-10 h-10 rounded-full object-cover border border-[#3f4147]">` : '<div class="w-10 h-10 rounded-full bg-[#3f4147] grid place-items-center text-xs">N</div>';
+    card.innerHTML = `
+      <div class="flex gap-3 items-start">
+        ${avatar}
+        <div class="flex-1 min-w-0">
+          <p class="whitespace-pre-wrap break-words">${esc(n.text)}</p>
+          <p class="text-xs text-slate-400 mt-1">Updated: ${esc(n.updated_at || '')}</p>
+          <div class="mt-2 flex gap-2">
+            <button class="px-2 py-1 bg-yellow-600 rounded" onclick="editNote('${n.id}')">Edit</button>
+            <button class="px-2 py-1 bg-red-600 rounded" onclick="deleteNote('${n.id}')">Delete</button>
+          </div>
+        </div>
+      </div>`;
+    list.appendChild(card);
+  });
+}
+async function createNote() {
+  const text = document.getElementById('noteText').value.trim();
+  const profile_pic_url = document.getElementById('noteAvatar').value.trim();
+  if (!text) return alert('Note text is required.');
+  try {
+    await reqJson('/api/utilities/notes', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({text, profile_pic_url})});
+  } catch (err) {
+    return alert(err.message || 'Failed');
+  }
+  document.getElementById('noteText').value = '';
+  document.getElementById('noteAvatar').value = '';
+  await refreshNotes();
+}
+async function editNote(id) {
+  const note = notes.find(x => x.id === id);
+  if (!note) return;
+  const text = prompt('Edit note text', note.text || '');
+  if (!text) return;
+  const profile_pic_url = prompt('Edit profile image URL (optional)', note.profile_pic_url || '') || '';
+  await reqJson('/api/utilities/notes/' + id, {method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify({text, profile_pic_url})});
+  await refreshNotes();
+}
+async function deleteNote(id) {
+  if (!confirm('Delete this note?')) return;
+  await reqJson('/api/utilities/notes/' + id, {method:'DELETE'});
+  await refreshNotes();
+}
+
 function esc(s) {
-  return String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  return String(s || '')
+    .replace(/&/g,'&amp;')
+    .replace(/</g,'&lt;')
+    .replace(/>/g,'&gt;')
+    .replace(/"/g,'&quot;')
+    .replace(/'/g,'&#39;');
 }
 
 // Init

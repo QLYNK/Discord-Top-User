@@ -485,7 +485,7 @@ class ProductivityCommands(commands.Cog):
     async def _complete_pomodoro_session(self, user_id: int, end_reason: str, ended_by_timer: bool = False):
         session = await pomodoro_sessions_col.find_one({"user_id": user_id})
         if not session:
-            return
+            return False
 
         await self._cancel_pomodoro_task(user_id)
 
@@ -518,7 +518,7 @@ class ProductivityCommands(commands.Cog):
             user = guild.get_member(user_id)
         if not user:
             await pomodoro_sessions_col.delete_one({"user_id": user_id})
-            return
+            return False
 
         await pomodoro_sessions_col.delete_one({"user_id": user_id})
 
@@ -551,6 +551,7 @@ class ProductivityCommands(commands.Cog):
                 ("End Reason", end_reason, True),
             ],
         )
+        return True
 
     async def start_pomodoro_session(self, interaction: discord.Interaction, task_reason: str):
         existing = await pomodoro_sessions_col.find_one({"user_id": interaction.user.id})
@@ -786,12 +787,16 @@ class ProductivityCommands(commands.Cog):
     @pomodoro_group.command(name="end", description="End your focus session")
     async def pomodoro_end(self, interaction: discord.Interaction):
         session = await pomodoro_sessions_col.find_one({"user_id": interaction.user.id})
-        if not session:
+        if not session or session.get("status") not in {"running", "paused"}:
             await interaction.response.send_message("You do not have an active focus session.", ephemeral=True)
             return
 
-        await interaction.response.send_message("Ending your focus session and preparing your report...")
-        await self._complete_pomodoro_session(interaction.user.id, "Ended by User")
+        await interaction.response.defer(thinking=True, ephemeral=True)
+        ended = await self._complete_pomodoro_session(interaction.user.id, "Ended by User")
+        if ended:
+            await interaction.followup.send("✅ Your focus session has been ended.", ephemeral=True)
+            return
+        await interaction.followup.send("You do not have an active focus session.", ephemeral=True)
 
     @pomodoro_profile_group.command(name="save", description="Save your Pomodoro profile")
     async def pomodoro_profile_save(self, interaction: discord.Interaction):

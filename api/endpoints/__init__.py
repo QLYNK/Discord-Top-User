@@ -7,6 +7,8 @@ from .public_guilds import register as register_public_guilds
 from .stats import register as register_stats
 from .utilities_keyword_item import register as register_utilities_keyword_item
 from .utilities_keywords import register as register_utilities_keywords
+from .utilities_note_item import register as register_utilities_note_item
+from .utilities_notes import register as register_utilities_notes
 from .utilities_quiz import register as register_utilities_quiz
 from .utilities_quiz_item import register as register_utilities_quiz_item
 from .utilities_tad import register as register_utilities_tad
@@ -23,6 +25,8 @@ def register_api_endpoints(app, deps):
     register_music_process(app, deps)
     register_utilities_keywords(app, deps)
     register_utilities_keyword_item(app, deps)
+    register_utilities_notes(app, deps)
+    register_utilities_note_item(app, deps)
     register_utilities_tad(app, deps)
     register_utilities_tad_item(app, deps)
     register_utilities_quiz(app, deps)
