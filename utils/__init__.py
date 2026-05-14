@@ -6,7 +6,7 @@ from datetime import datetime
 def generate_json_file(data: list) -> discord.File:
     """List of dictionaries ko JSON file me convert karta hai."""
     # Data ko json string me format karke bytes me convert karna
-    json_data = json.dumps(data, indent=4)
+    json_data = json.dumps(data, indent=4, default=str)
     file_bytes = io.BytesIO(json_data.encode('utf-8'))
     return discord.File(fp=file_bytes, filename=f"activity_log_{datetime.now().strftime('%Y%m%d')}.json")
 

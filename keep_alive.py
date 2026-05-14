@@ -65,31 +65,79 @@ def register_bot(bot):
 
 def _refresh_guild_cache() -> None:
     if not _BOT_REF:
-        _GUILD_CACHE["updated_at"] = time.time()
-        _GUILD_CACHE["guilds"] = []
-        _GUILD_CACHE["total_members"] = 0
+        _refresh_guild_cache_from_activity()
         return
 
     guilds_payload = []
     total_members = 0
-    try:
-        for guild in list(_BOT_REF.guilds):
+    for guild in list(getattr(_BOT_REF, "guilds", [])):
+        try:
             member_count = int(guild.member_count or 0)
             total_members += member_count
             guilds_payload.append(
                 {
                     "id": int(guild.id),
-                    "name": guild.name,
+                    "name": str(guild.name or f"Guild {guild.id}"),
                     "description": str(getattr(guild, "description", "") or ""),
                     "member_count": member_count,
                     "icon_url": str(guild.icon.url) if guild.icon else "",
                     "bot_integration_status": "Connected",
                 }
             )
-        guilds_payload.sort(key=lambda x: x["name"].lower())
-    except Exception:
-        guilds_payload = []
-        total_members = 0
+        except Exception:
+            continue
+
+    guilds_payload.sort(key=lambda x: x["name"].lower())
+    if not guilds_payload:
+        _refresh_guild_cache_from_activity()
+        return
+
+    _GUILD_CACHE["updated_at"] = time.time()
+    _GUILD_CACHE["guilds"] = guilds_payload
+    _GUILD_CACHE["total_members"] = total_members
+
+
+def _refresh_guild_cache_from_activity() -> None:
+    guilds_payload = []
+    total_members = 0
+    if activity_col is not None:
+        try:
+            rows = list(
+                activity_col.aggregate(
+                    [
+                        {
+                            "$group": {
+                                "_id": "$guild_id",
+                                "member_count": {"$sum": 1},
+                            }
+                        }
+                    ]
+                )
+            )
+            for row in rows:
+                raw_id = row.get("_id")
+                if raw_id is None:
+                    continue
+                try:
+                    guild_id = int(raw_id)
+                except (TypeError, ValueError):
+                    continue
+                member_count = int(row.get("member_count", 0) or 0)
+                total_members += member_count
+                guilds_payload.append(
+                    {
+                        "id": guild_id,
+                        "name": f"Guild {guild_id}",
+                        "description": "Server metadata unavailable in this process; showing activity-based discovery data.",
+                        "member_count": member_count,
+                        "icon_url": "",
+                        "bot_integration_status": "Connected",
+                    }
+                )
+            guilds_payload.sort(key=lambda x: x["name"].lower())
+        except Exception:
+            guilds_payload = []
+            total_members = 0
 
     _GUILD_CACHE["updated_at"] = time.time()
     _GUILD_CACHE["guilds"] = guilds_payload

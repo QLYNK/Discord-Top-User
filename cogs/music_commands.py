@@ -4,7 +4,6 @@ import secrets
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from urllib.parse import urlparse
 
 import discord
 from bson import ObjectId
@@ -688,15 +687,6 @@ class MusicCommands(commands.Cog):
                     continue
 
                 before_parts = []
-                parsed_url = urlparse(str(track.get("file_url") or ""))
-                if parsed_url.scheme in {"http", "https"}:
-                    before_parts.extend(
-                        [
-                            "-reconnect 1",
-                            "-reconnect_streamed 1",
-                            "-reconnect_delay_max 5",
-                        ]
-                    )
                 if state.resume_offset > 0:
                     before_parts.insert(0, f"-ss {state.resume_offset}")
                 before_options = " ".join(before_parts) if before_parts else None
