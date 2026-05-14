@@ -45,6 +45,7 @@ public_guilds_col = sync_mongo_client["LeaderboardBotDB"]["PublicGuildDiscovery"
 UPLOAD_ID_PATTERN = r"^[a-fA-F0-9-]{8,64}$"
 MAX_CHUNKS = 4096
 CHUNK_SIZE_BYTES = 10 * 1024 * 1024
+DEFAULT_TOP_COUNT = 3
 MAX_TOP_USERS_LIMIT = 25
 _UPLOAD_SESSION_KEYS: dict[str, str] = {}
 _TELEMETRY_HANDLER = None
@@ -72,7 +73,7 @@ def _live_top_users_for_guild(guild, top_count: int) -> list[dict[str, Any]]:
     if activity_col is None:
         return []
 
-    safe_limit = max(1, min(MAX_TOP_USERS_LIMIT, _safe_int(top_count, 3)))
+    safe_limit = max(1, min(MAX_TOP_USERS_LIMIT, _safe_int(top_count, DEFAULT_TOP_COUNT)))
     top_users: list[dict[str, Any]] = []
     try:
         cursor = activity_col.find({"guild_id": int(guild.id)}).sort("message_count", -1).limit(safe_limit)
@@ -96,7 +97,7 @@ def _live_top_users_for_guild(guild, top_count: int) -> list[dict[str, Any]]:
 
 
 def _normalize_public_guild_payload(doc: dict[str, Any]) -> dict[str, Any]:
-    top_count = max(1, _safe_int(doc.get("top_count"), 3))
+    top_count = max(1, _safe_int(doc.get("top_count"), DEFAULT_TOP_COUNT))
     top_users_raw = doc.get("top_users") if isinstance(doc.get("top_users"), list) else []
     top_users = []
     for row in top_users_raw:
@@ -117,7 +118,9 @@ def _normalize_public_guild_payload(doc: dict[str, Any]) -> dict[str, Any]:
 
     member_plus_bots = _safe_int(doc.get("member_plus_bots_count"), _safe_int(doc.get("member_count")))
     bots = max(0, _safe_int(doc.get("bots")))
-    humans = max(0, _safe_int(doc.get("total_members"), max(0, member_plus_bots - bots)))
+    # Priority: explicit total_members from DB -> derive from (total - bots) -> 0.
+    humans_from_total = _safe_int(doc.get("total_members"), -1)
+    humans = humans_from_total if humans_from_total >= 0 else max(0, member_plus_bots - bots)
 
     return {
         "id": _safe_int(doc.get("guild_id"), _safe_int(doc.get("id"))),
@@ -190,7 +193,7 @@ def _refresh_guild_cache() -> None:
                 "icon_url": "",
                 "photo": "",
                 "invite_url": DEFAULT_BOT_INVITE_URL,
-                "top_count": 3,
+                "top_count": DEFAULT_TOP_COUNT,
                 "top_users": [],
                 "bot_integration_status": "Bot Unavailable (No Snapshot)",
             }
@@ -213,17 +216,19 @@ def _refresh_guild_cache() -> None:
                 except Exception:
                     cached_doc = {}
 
-            members = list(getattr(guild, "members", []) or [])
+            members = getattr(guild, "members", []) or []
             bots = 0
             current_online = 0
+            member_cache_count = 0
             for member in members:
+                member_cache_count += 1
                 if getattr(member, "bot", False):
                     bots += 1
                 if str(getattr(member, "status", "offline")) not in {"offline", "invisible"}:
                     current_online += 1
-            member_plus_bots_count = _safe_int(guild.member_count, len(members))
+            member_plus_bots_count = _safe_int(guild.member_count, member_cache_count)
             if member_plus_bots_count <= 0:
-                member_plus_bots_count = max(0, len(members))
+                member_plus_bots_count = max(0, member_cache_count)
             total_members_human = max(0, member_plus_bots_count - bots)
 
             vanity_code = str(getattr(guild, "vanity_url_code", "") or "").strip()
@@ -233,13 +238,13 @@ def _refresh_guild_cache() -> None:
                 else str(cached_doc.get("invite_url") or DEFAULT_BOT_INVITE_URL)
             )
 
-            top_count = 3
+            top_count = DEFAULT_TOP_COUNT
             if settings_col is not None:
                 try:
                     row = settings_col.find_one({"guild_id": guild_id}, {"_id": 0, "top_count": 1}) or {}
-                    top_count = max(1, _safe_int(row.get("top_count"), 3))
+                    top_count = max(1, _safe_int(row.get("top_count"), DEFAULT_TOP_COUNT))
                 except Exception:
-                    top_count = 3
+                    top_count = DEFAULT_TOP_COUNT
             top_users = _live_top_users_for_guild(guild, top_count)
 
             payload = {
