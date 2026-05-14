@@ -107,9 +107,11 @@ class SetupCommands(commands.Cog):
             return None
         interval_days = max(1, int(settings.get("interval_days", 7) or 7))
         next_time = last_reset + timedelta(days=interval_days)
-        while now >= next_time:
-            next_time = next_time + timedelta(days=interval_days)
-        return next_time
+        if now < next_time:
+            return next_time
+        cycle_seconds = interval_days * 86400
+        cycles_passed = int((now - last_reset).total_seconds() // cycle_seconds) + 1
+        return last_reset + timedelta(days=cycles_passed * interval_days)
 
     async def _announce_current_result(self, guild: discord.Guild, settings: dict, reason: str):
         announcement_channel = guild.get_channel(settings.get("announcement_channel_id"))
@@ -280,7 +282,9 @@ class SetupCommands(commands.Cog):
         allowed_map = {d.isoformat(): d for d in allowed_dates}
         chosen_date = allowed_map.get(result_date)
         if not chosen_date:
-            await interaction.followup.send("❌ Invalid date. Please choose from the provided dynamic date options only.")
+            await interaction.followup.send(
+                "❌ Invalid date. Use the `result_date` autocomplete list (today to next 7 days) and select one of those options."
+            )
             return
 
         selected_start = datetime(
