@@ -14,7 +14,7 @@ from pathlib import Path
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
-TMP_DIR = Path("./tmp")
+TMP_DIR = (Path(__file__).resolve().parent / "tmp").resolve()
 TMP_DIR.mkdir(parents=True, exist_ok=True)
 
 MAX_CACHE_BYTES = 900 * 1024 * 1024  # 900 MB hard limit

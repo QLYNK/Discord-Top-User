@@ -13,6 +13,7 @@ import yt_dlp
 DEFAULT_ARTWORK = "https://deydeep-static-files.hf.space/f/ncs"
 CDN_BASE_URL = "https://deydeep-static-files.hf.space"
 CDN_API_URL = f"{CDN_BASE_URL}/api/rest"
+TMP_DIR = (Path(__file__).resolve().parent.parent / "tmp").resolve()
 
 YTDLP_HEADERS = {
     "User-Agent": (
@@ -31,7 +32,7 @@ def build_slug(name: str) -> str:
 
 
 def ensure_tmp_dir() -> Path:
-    tmp_dir = Path("./tmp")
+    tmp_dir = TMP_DIR
     tmp_dir.mkdir(parents=True, exist_ok=True)
     return tmp_dir
 
