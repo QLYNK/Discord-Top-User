@@ -2223,9 +2223,9 @@ class GameCommands(commands.Cog):
             len(server_profiles) + 1,
         )
 
-        total_games = _safe_int(profile.get("total_games", 0))
-        wins = _safe_int(profile.get("wins", 0))
-        losses = _safe_int(profile.get("losses", 0))
+        total_games = profile["total_games"]
+        wins = profile["wins"]
+        losses = profile["losses"]
         win_rate = ((wins / total_games) * 100) if total_games else 0.0
         member = interaction.guild.get_member(interaction.user.id)
 
@@ -2286,7 +2286,7 @@ class GameCommands(commands.Cog):
             title=f"📊 {interaction.user.display_name}'s Profile",
             color=0x5865F2,
         )
-        embed.add_field(name="Total Points", value=str(_safe_int(profile.get("points", 0))), inline=True)
+        embed.add_field(name="Total Points", value=str(profile["points"]), inline=True)
         embed.add_field(name="Join Time", value=join_time, inline=True)
         embed.add_field(name="Status", value=status_text, inline=True)
         embed.add_field(name="Wins", value=str(wins), inline=True)

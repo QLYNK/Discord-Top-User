@@ -605,10 +605,7 @@ class MusicCommands(commands.Cog):
         if not state.voice_client or not state.voice_client.is_connected():
             if interaction.user.voice and interaction.user.voice.channel:
                 channel = interaction.user.voice.channel
-                if state.voice_client and state.voice_client.is_connected():
-                    await state.voice_client.move_to(channel)
-                else:
-                    state.voice_client = await channel.connect()
+                state.voice_client = await channel.connect()
                 state.channel_id = channel.id
             else:
                 await interaction.response.send_message("❌ Join a voice channel first.", ephemeral=True)
