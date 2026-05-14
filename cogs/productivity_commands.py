@@ -41,6 +41,14 @@ def _format_hms(total_seconds: int) -> str:
     return f"{hours} Hours, {minutes} Minutes, {seconds} Seconds"
 
 
+def _as_utc_datetime(value: object) -> datetime | None:
+    if not isinstance(value, datetime):
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
 def _afk_applies(afk_doc: dict, guild_id: int | None) -> bool:
     if afk_doc.get("scope") == "global":
         return True
@@ -418,7 +426,12 @@ class ProductivityCommands(commands.Cog):
                 return None
         return None
 
-    async def _end_afk(self, user: discord.User | discord.Member, channel: discord.abc.Messageable, forced: bool = False):
+    async def _end_afk(
+        self,
+        user: discord.User | discord.Member,
+        channel: discord.abc.Messageable | None,
+        forced: bool = False,
+    ):
         afk_doc = await afks_col.find_one({"user_id": user.id})
         if not afk_doc:
             return False
@@ -427,7 +440,8 @@ class ProductivityCommands(commands.Cog):
         missed = afk_doc.get("missed", [])
         await afks_col.delete_one({"user_id": user.id})
 
-        duration = _format_hms(int((_utc_now() - started).total_seconds())) if isinstance(started, datetime) else "Unknown"
+        started_utc = _as_utc_datetime(started)
+        duration = _format_hms(int((_utc_now() - started_utc).total_seconds())) if started_utc else "Unknown"
         embed = await self._build_missed_embed("Missed Mentions While AFK", missed)
 
         mode_label = "Hard AFK" if afk_doc.get("strictness") == "hard" else "Soft AFK"
@@ -444,7 +458,11 @@ class ProductivityCommands(commands.Cog):
                 f"**AFK Duration:** {duration}"
             )
 
-        await channel.send(content, embed=embed)
+        if channel and hasattr(channel, "send"):
+            try:
+                await channel.send(content, embed=embed)
+            except Exception:
+                pass
         await self._safe_dm(
             user,
             content=(

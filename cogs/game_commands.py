@@ -78,6 +78,20 @@ def _member_delta(member: discord.abc.User, delta: int) -> str:
     return _format_points(None if getattr(member, "bot", False) else delta)
 
 
+def _safe_int(value: object, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _safe_float(value: object, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
 def _relative_ts(seconds_from_now: int) -> int:
     return int(datetime.now(timezone.utc).timestamp()) + max(1, seconds_from_now)
 
@@ -2193,19 +2207,25 @@ class GameCommands(commands.Cog):
     async def myprofile(self, interaction: discord.Interaction):
         await interaction.response.defer()
 
-        profile = await db.get_user_profile(interaction.user.id)
-        global_rank = await db.get_user_global_rank(interaction.user.id)
+        raw_profile = await db.get_user_profile(interaction.user.id)
+        profile = {
+            "points": _safe_int(raw_profile.get("points", 0)),
+            "wins": _safe_int(raw_profile.get("wins", 0)),
+            "losses": _safe_int(raw_profile.get("losses", 0)),
+            "total_games": _safe_int(raw_profile.get("total_games", 0)),
+        }
+        global_rank = _safe_int(await db.get_user_global_rank(interaction.user.id), 1)
         sorted_profiles = await db.get_sorted_user_profiles()
         guild_member_ids = {member.id for member in interaction.guild.members}
-        server_profiles = [item for item in sorted_profiles if item["user_id"] in guild_member_ids]
+        server_profiles = [item for item in sorted_profiles if _safe_int(item.get("user_id")) in guild_member_ids]
         server_rank = next(
-            (idx for idx, item in enumerate(server_profiles, start=1) if item["user_id"] == interaction.user.id),
+            (idx for idx, item in enumerate(server_profiles, start=1) if _safe_int(item.get("user_id")) == interaction.user.id),
             len(server_profiles) + 1,
         )
 
-        total_games = profile.get("total_games", 0)
-        wins = profile.get("wins", 0)
-        losses = profile.get("losses", 0)
+        total_games = _safe_int(profile.get("total_games", 0))
+        wins = _safe_int(profile.get("wins", 0))
+        losses = _safe_int(profile.get("losses", 0))
         win_rate = ((wins / total_games) * 100) if total_games else 0.0
         member = interaction.guild.get_member(interaction.user.id)
 
@@ -2228,19 +2248,19 @@ class GameCommands(commands.Cog):
             }
 
         pomodoro_profile_summary = (
-            f"Work: {int(pomodoro_profile.get('work_minutes', 25))}m\n"
-            f"Short Break: {int(pomodoro_profile.get('short_break_minutes', 5))}m\n"
-            f"Long Break: {int(pomodoro_profile.get('long_break_minutes', 15))}m\n"
-            f"Cycles: {int(pomodoro_profile.get('cycles_before_long_break', 4))}\n"
-            f"Lifetime Focus: {int(float(pomodoro_profile.get('lifetime_focus_minutes', 0.0)) * 60)}s"
+            f"Work: {_safe_int(pomodoro_profile.get('work_minutes', 25), 25)}m\n"
+            f"Short Break: {_safe_int(pomodoro_profile.get('short_break_minutes', 5), 5)}m\n"
+            f"Long Break: {_safe_int(pomodoro_profile.get('long_break_minutes', 15), 15)}m\n"
+            f"Cycles: {_safe_int(pomodoro_profile.get('cycles_before_long_break', 4), 4)}\n"
+            f"Lifetime Focus: {int(_safe_float(pomodoro_profile.get('lifetime_focus_minutes', 0.0), 0.0) * 60)}s"
         )
 
         session = await pomodoro_sessions_col.find_one({"user_id": {"$in": db.user_id_variants(interaction.user.id)}})
         if session:
             now = datetime.now(timezone.utc)
             status = str(session.get("status", "unknown")).title()
-            remaining = int(session.get("remaining_seconds", 0))
-            focused = int(session.get("focused_seconds_accum", 0))
+            remaining = _safe_int(session.get("remaining_seconds", 0))
+            focused = _safe_int(session.get("focused_seconds_accum", 0))
             last_resumed_at = session.get("last_resumed_at")
             if session.get("status") == "running" and isinstance(last_resumed_at, datetime):
                 elapsed = max(0, int((now - last_resumed_at).total_seconds()))
@@ -2266,7 +2286,7 @@ class GameCommands(commands.Cog):
             title=f"📊 {interaction.user.display_name}'s Profile",
             color=0x5865F2,
         )
-        embed.add_field(name="Total Points", value=str(profile.get("points", 0)), inline=True)
+        embed.add_field(name="Total Points", value=str(_safe_int(profile.get("points", 0))), inline=True)
         embed.add_field(name="Join Time", value=join_time, inline=True)
         embed.add_field(name="Status", value=status_text, inline=True)
         embed.add_field(name="Wins", value=str(wins), inline=True)

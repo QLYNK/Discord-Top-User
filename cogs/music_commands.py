@@ -603,8 +603,16 @@ class MusicCommands(commands.Cog):
     async def music_start(self, interaction: discord.Interaction) -> None:
         state = self.get_state(interaction.guild_id)
         if not state.voice_client or not state.voice_client.is_connected():
-            await interaction.response.send_message("❌ Use `/music join` first.", ephemeral=True)
-            return
+            if interaction.user.voice and interaction.user.voice.channel:
+                channel = interaction.user.voice.channel
+                if state.voice_client and state.voice_client.is_connected():
+                    await state.voice_client.move_to(channel)
+                else:
+                    state.voice_client = await channel.connect()
+                state.channel_id = channel.id
+            else:
+                await interaction.response.send_message("❌ Join a voice channel first.", ephemeral=True)
+                return
 
         await interaction.response.defer(thinking=True)
         tracks = await music_col.find({}, {"title": 1, "name": 1, "file_url": 1, "url": 1, "artwork_url": 1}).to_list(length=None)

@@ -7,6 +7,10 @@ def register(app, deps):
     def public_guild_detail(guild_id: int):
         snapshot = deps["get_discovery_snapshot"]()
         for guild in snapshot.get("guilds", []):
-            if int(guild.get("id", 0)) == guild_id:
+            try:
+                resolved_id = int(guild.get("id", 0))
+            except (TypeError, ValueError):
+                continue
+            if resolved_id == guild_id:
                 return jsonify({"guild": guild})
         return jsonify({"error": "Guild not found"}), 404

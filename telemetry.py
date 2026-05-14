@@ -15,6 +15,13 @@ MODULE_LOG_FIELD_MAP = {
 }
 
 
+def _field_text(value: object | None) -> str:
+    if value is None:
+        return "-"
+    text = str(value)
+    return text if text else "-"
+
+
 def _fmt_server(guild: discord.Guild | None) -> str:
     if not guild:
         return "Unknown Server"
@@ -60,7 +67,7 @@ async def send_master_log(
     )
     if fields:
         for name, value, inline in fields:
-            embed.add_field(name=name, value=(value or "-")[:1024], inline=inline)
+            embed.add_field(name=_field_text(name)[:256], value=_field_text(value)[:1024], inline=inline)
 
     try:
         await channel.send(embed=embed)
@@ -137,7 +144,7 @@ async def send_guild_module_log(
         )
         if fields:
             for name, value, inline in fields:
-                embed.add_field(name=name, value=(value or "-")[:1024], inline=inline)
+                embed.add_field(name=_field_text(name)[:256], value=_field_text(value)[:1024], inline=inline)
         await channel.send(embed=embed)
     except Exception:
         pass
