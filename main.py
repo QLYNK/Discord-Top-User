@@ -184,9 +184,17 @@ bot.tree.on_error = _tree_on_error
 
 @tasks.loop(minutes=1)
 async def update_api_stats():
+    uptime_seconds = 0
+    if getattr(bot, "start_time", None):
+        try:
+            uptime_seconds = max(0, int((datetime.now() - bot.start_time).total_seconds()))
+        except Exception:
+            uptime_seconds = 0
     stats_data = {
         "servers": len(bot.guilds),
-        "ping": round(bot.latency * 1000)
+        "users": sum(int(g.member_count or 0) for g in bot.guilds),
+        "ping": round(bot.latency * 1000),
+        "uptime_seconds": uptime_seconds,
     }
     with open('stats.json', 'w') as f:
         json.dump(stats_data, f)

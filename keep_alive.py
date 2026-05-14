@@ -43,6 +43,7 @@ activity_col = sync_mongo_client["LeaderboardBotDB"]["ActivityData"] if sync_mon
 settings_col = sync_mongo_client["LeaderboardBotDB"]["GuildSettings"] if sync_mongo_client else None
 notes_col = sync_mongo_client["LeaderboardBotDB"]["UtilityNotes"] if sync_mongo_client else None
 guild_public_col = sync_mongo_client["LeaderboardBotDB"]["GuildPublicSnapshots"] if sync_mongo_client else None
+public_meta_col = sync_mongo_client["LeaderboardBotDB"]["PublicMetaSnapshots"] if sync_mongo_client else None
 UPLOAD_ID_PATTERN = r"^[a-fA-F0-9-]{8,64}$"
 MAX_CHUNKS = 4096
 CHUNK_SIZE_BYTES = 10 * 1024 * 1024
@@ -54,6 +55,10 @@ _GUILD_CACHE: dict[str, Any] = {
     "updated_at": 0.0,
     "guilds": [],
     "total_members": 0,
+}
+_COMMAND_CACHE: dict[str, Any] = {
+    "updated_at": 0.0,
+    "commands": [],
 }
 BOT_INVITE_URL = "https://discord.com/oauth2/authorize?client_id=1503257840356163584&permissions=6835289926782017&integration_type=0&scope=bot"
 
@@ -68,7 +73,99 @@ def register_bot(bot):
     _BOT_REF = bot
 
 
+def _safe_message_totals_by_guild() -> dict[int, int]:
+    totals: dict[int, int] = {}
+    if activity_col is None:
+        return totals
+    try:
+        for row in activity_col.aggregate(
+            [
+                {"$group": {"_id": "$guild_id", "total": {"$sum": "$message_count"}}},
+            ]
+        ):
+            gid = int(row.get("_id") or 0)
+            if gid > 0:
+                totals[gid] = int(row.get("total") or 0)
+    except Exception:
+        return {}
+    return totals
+
+
+def _extract_public_commands() -> list[dict[str, Any]]:
+    if not _BOT_REF:
+        return []
+    try:
+        commands_list: list[dict[str, Any]] = []
+        for cmd in sorted(_BOT_REF.tree.walk_commands(), key=lambda c: c.qualified_name):
+            cmd_type = str(getattr(getattr(cmd, "type", None), "name", "chat_input")).lower()
+            if cmd_type != "chat_input":
+                continue
+            options = []
+            raw_parameters = getattr(cmd, "parameters", {}) or {}
+            parameter_values = raw_parameters.values() if isinstance(raw_parameters, dict) else raw_parameters
+            for option in list(parameter_values):
+                options.append(
+                    {
+                        "name": str(getattr(option, "name", "")),
+                        "required": bool(getattr(option, "required", False)),
+                    }
+                )
+            usage_parts = [f"/{cmd.qualified_name}"]
+            for option in options:
+                token = f"<{option['name']}>" if option["required"] else f"[{option['name']}]"
+                usage_parts.append(token)
+            commands_list.append(
+                {
+                    "name": str(cmd.qualified_name),
+                    "description": str(getattr(cmd, "description", "") or "No description provided."),
+                    "usage": " ".join(usage_parts),
+                    "options": options,
+                }
+            )
+        return commands_list
+    except Exception:
+        return []
+
+
+def _refresh_command_cache() -> None:
+    commands_payload = _extract_public_commands()
+    if not commands_payload and public_meta_col is not None:
+        try:
+            doc = public_meta_col.find_one({"_id": "commands"}, {"commands": 1})
+            commands_payload = list((doc or {}).get("commands") or [])
+        except Exception:
+            commands_payload = []
+    _COMMAND_CACHE["updated_at"] = time.time()
+    _COMMAND_CACHE["commands"] = commands_payload
+    if commands_payload and public_meta_col is not None and _BOT_REF:
+        try:
+            public_meta_col.update_one(
+                {"_id": "commands"},
+                {"$set": {"commands": commands_payload, "updated_at": datetime.utcnow()}},
+                upsert=True,
+            )
+        except Exception:
+            pass
+
+
+def _get_public_commands_snapshot() -> list[dict[str, Any]]:
+    now = time.time()
+    if now - float(_COMMAND_CACHE.get("updated_at", 0.0)) > 60:
+        _refresh_command_cache()
+    return list(_COMMAND_CACHE.get("commands", []))
+
+
+def _read_stats_file() -> dict[str, Any]:
+    try:
+        with open("stats.json", "r", encoding="utf-8") as f:
+            payload = json.load(f)
+            return payload if isinstance(payload, dict) else {}
+    except Exception:
+        return {}
+
+
 def _refresh_guild_cache() -> None:
+    message_totals = _safe_message_totals_by_guild()
     if not _BOT_REF:
         db_guild_payload: list[dict[str, Any]] = []
         if guild_public_col is not None:
@@ -89,6 +186,12 @@ def _refresh_guild_cache() -> None:
                             "top_count_selected": 1,
                             "permanent_invite_link": 1,
                             "server_link": 1,
+                            "owner_id": 1,
+                            "owner_name": 1,
+                            "guild_message_count": 1,
+                            "per_day_messages": 1,
+                            "per_7days_messages": 1,
+                            "member_names": 1,
                         },
                     ).sort("name", 1)
                 )
@@ -104,9 +207,16 @@ def _refresh_guild_cache() -> None:
                             "member_count": int(doc.get("member_count") or 0),
                             "online_count": int(doc.get("online_count") or 0),
                             "bot_count": int(doc.get("bot_count") or 0),
+                            "boys_count": int(doc.get("bot_count") or 0),
                             "human_count": int(doc.get("human_count") or 0),
                             "member_plus_bots_count": int(doc.get("member_plus_bots_count") or int(doc.get("member_count") or 0)),
                             "top_count_selected": int(doc.get("top_count_selected") or 3),
+                            "owner_id": str(doc.get("owner_id") or ""),
+                            "owner_name": str(doc.get("owner_name") or "Unknown"),
+                            "guild_message_count": int(doc.get("guild_message_count") or message_totals.get(gid, 0)),
+                            "per_day_messages": int(doc.get("per_day_messages") or message_totals.get(gid, 0)),
+                            "per_7days_messages": int(doc.get("per_7days_messages") or (message_totals.get(gid, 0) * 7)),
+                            "member_names": [str(name) for name in list(doc.get("member_names") or [])[:500]],
                             "icon_url": str(doc.get("icon_url") or ""),
                             "permanent_invite_link": str(doc.get("permanent_invite_link") or ""),
                             "server_link": str(doc.get("server_link") or f"/server/{gid}"),
@@ -147,9 +257,16 @@ def _refresh_guild_cache() -> None:
                 "member_count": 0,
                 "online_count": 0,
                 "bot_count": 0,
+                "boys_count": 0,
                 "human_count": 0,
                 "member_plus_bots_count": 0,
                 "top_count_selected": 3,
+                "owner_id": "",
+                "owner_name": "Unknown",
+                "guild_message_count": int(message_totals.get(gid, 0)),
+                "per_day_messages": int(message_totals.get(gid, 0)),
+                "per_7days_messages": int(message_totals.get(gid, 0) * 7),
+                "member_names": [],
                 "icon_url": "",
                 "permanent_invite_link": "",
                 "server_link": f"/server/{gid}",
@@ -182,6 +299,7 @@ def _refresh_guild_cache() -> None:
             online_count = 0
             bot_count = 0
             human_count = max(0, member_count)
+            member_names: list[str] = []
             try:
                 if guild.chunked and guild.members:
                     bot_count = sum(1 for m in guild.members if m.bot)
@@ -191,13 +309,29 @@ def _refresh_guild_cache() -> None:
                         for m in guild.members
                         if str(getattr(m, "status", "offline")) in {"online", "idle", "dnd"}
                     )
+                    unique_names: dict[str, None] = {}
+                    for m in guild.members:
+                        lowered_name = str(getattr(m, "name", "") or "").strip().lower()
+                        lowered_display = str(getattr(m, "display_name", "") or "").strip().lower()
+                        if lowered_name and lowered_name not in unique_names:
+                            unique_names[lowered_name] = None
+                        if lowered_display and lowered_display not in unique_names:
+                            unique_names[lowered_display] = None
+                        if len(unique_names) >= 500:
+                            break
+                    member_names = list(unique_names.keys())
             except Exception:
                 bot_count = 0
                 human_count = max(0, member_count)
                 online_count = 0
+                member_names = []
             top_count_selected = int(top_count_map.get(int(guild.id), 3))
             vanity_code = str(getattr(guild, "vanity_url_code", "") or "").strip()
             permanent_invite_link = f"https://discord.gg/{vanity_code}" if vanity_code else ""
+            owner = getattr(guild, "owner", None)
+            owner_name = str(getattr(owner, "display_name", "") or getattr(owner, "name", "") or "Unknown")
+            owner_id = int(getattr(owner, "id", 0) or getattr(guild, "owner_id", 0) or 0)
+            guild_message_count = int(message_totals.get(int(guild.id), 0))
             payload = {
                 "id": str(guild.id),
                 "name": guild.name,
@@ -205,9 +339,16 @@ def _refresh_guild_cache() -> None:
                 "member_count": member_count,
                 "online_count": online_count,
                 "bot_count": bot_count,
+                "boys_count": bot_count,
                 "human_count": human_count,
                 "member_plus_bots_count": member_count,
                 "top_count_selected": top_count_selected,
+                "owner_id": str(owner_id) if owner_id > 0 else "",
+                "owner_name": owner_name,
+                "guild_message_count": guild_message_count,
+                "per_day_messages": guild_message_count,
+                "per_7days_messages": guild_message_count * 7,
+                "member_names": member_names,
                 "icon_url": str(guild.icon.url) if guild.icon else "",
                 "permanent_invite_link": permanent_invite_link,
                 "server_link": f"/server/{guild.id}",
@@ -233,6 +374,12 @@ def _refresh_guild_cache() -> None:
                                 "human_count": payload["human_count"],
                                 "member_plus_bots_count": payload["member_plus_bots_count"],
                                 "top_count_selected": payload["top_count_selected"],
+                                "owner_id": payload["owner_id"],
+                                "owner_name": payload["owner_name"],
+                                "guild_message_count": payload["guild_message_count"],
+                                "per_day_messages": payload["per_day_messages"],
+                                "per_7days_messages": payload["per_7days_messages"],
+                                "member_names": payload["member_names"],
                                 "permanent_invite_link": payload["permanent_invite_link"],
                                 "server_link": payload["server_link"],
                                 "updated_at": datetime.utcnow(),
@@ -275,12 +422,25 @@ def _get_discovery_snapshot() -> dict[str, Any]:
             uptime_seconds = max(0, int((datetime.utcnow() - _BOT_REF.start_time).total_seconds()))
         except Exception:
             uptime_seconds = 0
+    stats_payload = _read_stats_file()
+    if uptime_seconds <= 0:
+        uptime_seconds = max(0, int(stats_payload.get("uptime_seconds", 0) or 0))
+
+    ping_ms = 0
+    if _BOT_REF:
+        try:
+            ping_ms = max(0, int(round(float(_BOT_REF.latency) * 1000)))
+        except Exception:
+            ping_ms = 0
+    if ping_ms <= 0:
+        ping_ms = max(0, int(stats_payload.get("ping", 0) or 0))
 
     return {
         "total_guilds": total_guilds,
         "total_users": total_users,
         "global_message_count": global_message_count,
         "uptime_seconds": uptime_seconds,
+        "ping_ms": ping_ms,
         "guilds": guilds,
     }
 
@@ -509,6 +669,7 @@ def _register_api_routes():
             "require_music_auth": _require_music_auth,
             "require_utilities_auth": _require_utilities_auth,
             "get_discovery_snapshot": _get_discovery_snapshot,
+            "get_public_commands_snapshot": _get_public_commands_snapshot,
             "track_doc_to_payload": _track_doc_to_payload,
             "coerce_id_query": _coerce_id_query,
             "run_async": _run_async,
@@ -566,6 +727,7 @@ def guild_cache_refresh_loop():
     while True:
         try:
             _refresh_guild_cache()
+            _refresh_command_cache()
         except Exception:
             pass
         time.sleep(20)
@@ -863,16 +1025,17 @@ _HOME_HTML = """
            class="inline-flex items-center justify-center px-5 py-3 rounded-lg bg-indigo-600 hover:bg-indigo-500 font-semibold">Add to Discord</a>
       </div>
     </section>
-    <section class="grid sm:grid-cols-2 xl:grid-cols-4 gap-4" id="statsCards">
+    <section class="grid sm:grid-cols-2 xl:grid-cols-5 gap-4" id="statsCards">
       <article class="rounded-xl border border-slate-800 bg-[#151b24] p-4"><p class="text-slate-400 text-sm">Total Guilds</p><p id="statGuilds" class="text-2xl font-bold mt-1">—</p></article>
       <article class="rounded-xl border border-slate-800 bg-[#151b24] p-4"><p class="text-slate-400 text-sm">Total Users</p><p id="statUsers" class="text-2xl font-bold mt-1">—</p></article>
       <article class="rounded-xl border border-slate-800 bg-[#151b24] p-4"><p class="text-slate-400 text-sm">Global Message Count</p><p id="statMessages" class="text-2xl font-bold mt-1">—</p></article>
+      <article class="rounded-xl border border-slate-800 bg-[#151b24] p-4"><p class="text-slate-400 text-sm">Bot Ping</p><p id="statPing" class="text-2xl font-bold mt-1">—</p></article>
       <article class="rounded-xl border border-slate-800 bg-[#151b24] p-4"><p class="text-slate-400 text-sm">Uptime</p><p id="statUptime" class="text-2xl font-bold mt-1">—</p></article>
     </section>
     <section class="rounded-xl border border-slate-800 bg-[#151b24] p-4 md:p-5 space-y-4">
       <div class="flex flex-col md:flex-row md:items-center gap-3 md:justify-between">
         <h2 class="text-xl font-semibold">Server List</h2>
-        <input id="searchInput" type="search" placeholder="Search by name/description (character, word, or line)"
+        <input id="searchInput" type="search" placeholder="Search by server/member/owner/description (character or keyword)"
                class="w-full md:w-[420px] px-4 py-2 rounded bg-[#0f1115] border border-slate-700 outline-none focus:border-indigo-500">
       </div>
       <div id="serverList" class="grid md:grid-cols-2 xl:grid-cols-3 gap-3"></div>
@@ -906,6 +1069,7 @@ _HOME_HTML = """
       document.getElementById("statGuilds").textContent = fmtNumber(totals.guilds);
       document.getElementById("statUsers").textContent = fmtNumber(totals.users);
       document.getElementById("statMessages").textContent = fmtNumber(totals.global_message_count);
+      document.getElementById("statPing").textContent = `${fmtNumber(totals.ping_ms)} ms`;
       document.getElementById("statUptime").textContent = fmtUptime(totals.uptime_seconds);
     }
 
@@ -917,7 +1081,10 @@ _HOME_HTML = """
             <img src="${icon}" alt="${server.name}" class="w-12 h-12 rounded-lg object-cover">
             <div class="min-w-0 flex-1">
               <h3 class="font-semibold truncate">${server.name}</h3>
-              <p class="text-sm text-slate-400 mt-1">${fmtNumber(server.member_count)} members</p>
+              <p class="text-sm text-slate-400 mt-1">${fmtNumber(server.member_plus_bots_count || server.member_count)} members (incl bots)</p>
+              <p class="text-xs text-slate-400 mt-1 truncate">Owner: ${server.owner_name || "Unknown"}</p>
+              <p class="text-xs text-slate-400 mt-1">Online: ${fmtNumber(server.online_count)} • Humans: ${fmtNumber(server.human_count)} • Bots/Boys: ${fmtNumber(server.bot_count)}</p>
+              <p class="text-xs text-slate-400 mt-1">Per day: ${fmtNumber(server.per_day_messages)} • 7 days: ${fmtNumber(server.per_7days_messages)}</p>
               <p class="text-xs text-indigo-300 mt-1 truncate">Status: ${server.bot_integration_status}</p>
             </div>
           </div>
@@ -936,7 +1103,7 @@ _HOME_HTML = """
       const data = await res.json();
       if (!res.ok) {
         list.innerHTML = `<p class="text-red-400">${data.error || "Failed to load servers."}</p>`;
-        renderStats({ guilds: 0, users: 0, global_message_count: 0, uptime_seconds: 0 });
+        renderStats({ guilds: 0, users: 0, global_message_count: 0, uptime_seconds: 0, ping_ms: 0 });
         document.getElementById("prevBtn").disabled = true;
         document.getElementById("nextBtn").disabled = true;
         document.getElementById("pageLabel").textContent = "Page 1";
@@ -944,7 +1111,7 @@ _HOME_HTML = """
       }
       const items = data.items || [];
       list.innerHTML = items.map(cardTemplate).join("") || `<p class="text-slate-400">No matching servers found.</p>`;
-      renderStats(data.totals || { guilds: 0, users: 0, global_message_count: 0, uptime_seconds: 0 });
+      renderStats(data.totals || { guilds: 0, users: 0, global_message_count: 0, uptime_seconds: 0, ping_ms: 0 });
       const pageInfo = data.pagination || {};
       document.getElementById("prevBtn").disabled = !pageInfo.has_prev;
       document.getElementById("nextBtn").disabled = !pageInfo.has_next;
@@ -969,10 +1136,15 @@ _HOME_HTML = """
             <p class="text-lg font-bold">${g.name}</p>
             <p class="text-slate-400 mt-1">${g.description || "No public description available."}</p>
             <ul class="mt-3 text-sm text-slate-300 space-y-1">
-              <li><strong>Member Count:</strong> ${fmtNumber(g.member_count)}</li>
+              <li><strong>Member Count (incl bots):</strong> ${fmtNumber(g.member_plus_bots_count || g.member_count)}</li>
               <li><strong>Online:</strong> ${fmtNumber(g.online_count)}</li>
-              <li><strong>Bots:</strong> ${fmtNumber(g.bot_count)}</li>
+              <li><strong>Bots/Boys:</strong> ${fmtNumber(g.bot_count)}</li>
               <li><strong>Humans:</strong> ${fmtNumber(g.human_count)}</li>
+              <li><strong>Owner Name:</strong> ${g.owner_name || "Unknown"}</li>
+              <li><strong>Owner ID:</strong> ${g.owner_id || "Unknown"}</li>
+              <li><strong>Total Messages:</strong> ${fmtNumber(g.guild_message_count)}</li>
+              <li><strong>Per Day Messages:</strong> ${fmtNumber(g.per_day_messages)}</li>
+              <li><strong>Per 7 Days Messages:</strong> ${fmtNumber(g.per_7days_messages)}</li>
               <li><strong>Top X Selected:</strong> ${fmtNumber(g.top_count_selected)}</li>
               <li><strong>Permanent Invite:</strong> ${g.permanent_invite_link ? `<a class="underline" href="${g.permanent_invite_link}" target="_blank" rel="noopener noreferrer">${g.permanent_invite_link}</a>` : "Not available"}</li>
               <li><strong>Integration Status:</strong> ${g.bot_integration_status}</li>
@@ -1094,18 +1266,69 @@ _DASHBOARD_HTML = """
 
     <section class="rounded-xl border border-slate-800 bg-[#151b24] p-5">
       <h2 class="text-2xl font-semibold">Commands</h2>
+      <p class="mt-2 text-slate-300">Live command index and preview pulled from the running bot. Use search to match command name, usage, or description.</p>
+      <input id="commandSearch" type="search" placeholder="Search commands..."
+             class="mt-3 w-full md:w-[480px] px-4 py-2 rounded bg-[#0f1115] border border-slate-700 outline-none focus:border-indigo-500">
+      <div id="commandGrid" class="mt-4 grid md:grid-cols-2 gap-4 text-slate-300"></div>
+      <p id="commandEmpty" class="hidden mt-3 text-slate-400">No matching commands found.</p>
+    </section>
+
+    <section class="rounded-xl border border-slate-800 bg-[#151b24] p-5">
+      <h2 class="text-2xl font-semibold">Command workflow preview</h2>
       <div class="mt-3 grid md:grid-cols-2 gap-4 text-slate-300">
-        <div>
-          <h3 class="font-semibold text-slate-100">Music</h3>
-          <p>/music join, /music start, /music select, /music pause, /music resume, /music leave, /music nowplaying, /music live, /music 247</p>
+        <div class="rounded-lg border border-slate-700 p-4">
+          <h3 class="font-semibold text-slate-100">Leaderboard setup flow</h3>
+          <p class="mt-2">/setup channel → /setup logs → /setup role → /setup check to verify your cycle and backup pipeline.</p>
         </div>
-        <div>
-          <h3 class="font-semibold text-slate-100">Setup & Utilities</h3>
-          <p>/setup, /utility, /productivity, /proxy, /game</p>
+        <div class="rounded-lg border border-slate-700 p-4">
+          <h3 class="font-semibold text-slate-100">Music flow</h3>
+          <p class="mt-2">/music join → /music start (or /music select) → /music nowplaying → /music queue for live playback control.</p>
         </div>
       </div>
     </section>
   </main>
+  <script>
+    let allCommands = [];
+
+    function commandCard(cmd) {
+      const options = Array.isArray(cmd.options) ? cmd.options : [];
+      const optionsPreview = options.length
+        ? options.map((opt) => `${opt.name}${opt.required ? "*" : ""}`).join(", ")
+        : "No parameters";
+      return `
+        <article class="rounded-lg border border-slate-700 p-4 bg-[#101722]">
+          <h3 class="font-semibold text-slate-100">/${cmd.name}</h3>
+          <p class="text-slate-300 mt-2">${cmd.description || "No description provided."}</p>
+          <p class="text-indigo-300 text-sm mt-2"><strong>Preview:</strong> ${cmd.usage || `/${cmd.name}`}</p>
+          <p class="text-slate-400 text-xs mt-2"><strong>Params:</strong> ${optionsPreview}</p>
+        </article>
+      `;
+    }
+
+    function renderCommands(query = "") {
+      const target = document.getElementById("commandGrid");
+      const normalized = (query || "").trim().toLowerCase();
+      const filtered = normalized
+        ? allCommands.filter((cmd) => `${cmd.name}\n${cmd.description}\n${cmd.usage}`.toLowerCase().includes(normalized))
+        : allCommands;
+      target.innerHTML = filtered.map(commandCard).join("");
+      document.getElementById("commandEmpty").classList.toggle("hidden", filtered.length > 0);
+    }
+
+    async function loadCommands() {
+      try {
+        const res = await fetch("/api/public/commands");
+        const data = await res.json();
+        allCommands = Array.isArray(data.commands) ? data.commands : [];
+      } catch (_) {
+        allCommands = [];
+      }
+      renderCommands("");
+    }
+
+    document.getElementById("commandSearch").addEventListener("input", (event) => renderCommands(event.target.value || ""));
+    loadCommands();
+  </script>
 </body>
 </html>
 """
