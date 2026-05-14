@@ -609,7 +609,7 @@ class UtilityCommands(commands.Cog):
         opt3: str | None = None,
         opt4: str | None = None,
         opt5: str | None = None,
-        timer_in_hours: app_commands.Range[float, 0.1, 168] | None = None,
+        timer_in_hours: app_commands.Range[float, 0.1, 168.0] | None = None,
     ):
         options = [opt1, opt2] + [opt for opt in [opt3, opt4, opt5] if opt]
         view = PollView(question, options, timer_in_hours)

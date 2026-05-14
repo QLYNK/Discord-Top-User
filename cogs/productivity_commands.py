@@ -418,7 +418,12 @@ class ProductivityCommands(commands.Cog):
                 return None
         return None
 
-    async def _end_afk(self, user: discord.User | discord.Member, channel: discord.abc.Messageable, forced: bool = False):
+    async def _end_afk(
+        self,
+        user: discord.User | discord.Member,
+        channel: discord.abc.Messageable | None,
+        forced: bool = False,
+    ):
         afk_doc = await afks_col.find_one({"user_id": user.id})
         if not afk_doc:
             return False
@@ -444,7 +449,11 @@ class ProductivityCommands(commands.Cog):
                 f"**AFK Duration:** {duration}"
             )
 
-        await channel.send(content, embed=embed)
+        if channel:
+            try:
+                await channel.send(content, embed=embed)
+            except Exception:
+                pass
         await self._safe_dm(
             user,
             content=(
@@ -626,8 +635,9 @@ class ProductivityCommands(commands.Cog):
             )
             return
 
-        await interaction.response.defer(thinking=True)
+        await interaction.response.defer(thinking=True, ephemeral=True)
         await self._end_afk(interaction.user, interaction.channel)
+        await interaction.followup.send("✅ Your AFK status has been ended.", ephemeral=True)
         await self._log_afk_event(
             interaction,
             activity_type="AFK Ended",
