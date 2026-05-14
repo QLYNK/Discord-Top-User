@@ -452,8 +452,8 @@ class ProductivityCommands(commands.Cog):
         if channel:
             try:
                 await channel.send(content, embed=embed)
-            except Exception:
-                pass
+            except Exception as send_exc:
+                print(f"[AFK] Failed to send AFK end message in channel: {type(send_exc).__name__}")
         await self._safe_dm(
             user,
             content=(

@@ -298,8 +298,8 @@ class MusicCommands(commands.Cog):
             try:
                 if state.voice_client:
                     await state.voice_client.disconnect(force=True)
-            except Exception:
-                pass
+            except Exception as disconnect_exc:
+                print(f"[Music] Voice disconnect during reconnect failed: {type(disconnect_exc).__name__}")
             state.voice_client = await target_channel.connect(reconnect=True)
 
         state.channel_id = target_channel.id
@@ -676,7 +676,8 @@ class MusicCommands(commands.Cog):
                         break
                     try:
                         state.voice_client = await channel.connect(reconnect=True)
-                    except Exception:
+                    except Exception as reconnect_exc:
+                        print(f"[Music] Voice reconnect failed: {type(reconnect_exc).__name__}")
                         break
 
                 mp3_path = await smart_download(track["file_url"])
