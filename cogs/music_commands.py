@@ -115,6 +115,9 @@ class _LiveDashboardView(discord.ui.View):
 
     @discord.ui.button(emoji="⏯️", style=discord.ButtonStyle.primary, custom_id="live_playpause")
     async def play_pause(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        if not await self.cog._is_owner(interaction.user):
+            await interaction.response.send_message("Only the bot owner can use live playback controls.", ephemeral=True)
+            return
         state = self.cog.get_state(self.guild_id)
         vc = state.voice_client
         if not vc:
@@ -137,6 +140,9 @@ class _LiveDashboardView(discord.ui.View):
 
     @discord.ui.button(emoji="⏭️", style=discord.ButtonStyle.secondary, custom_id="live_skip")
     async def skip_track(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        if not await self.cog._is_owner(interaction.user):
+            await interaction.response.send_message("Only the bot owner can use live playback controls.", ephemeral=True)
+            return
         state = self.cog.get_state(self.guild_id)
         if state.voice_client and (state.voice_client.is_playing() or state.voice_client.is_paused()):
             state.voice_client.stop()
@@ -279,6 +285,12 @@ class MusicCommands(commands.Cog):
         if guild_id not in self._states:
             self._states[guild_id] = GuildMusicState()
         return self._states[guild_id]
+
+    async def _is_owner(self, user: discord.abc.User) -> bool:
+        try:
+            return await self.bot.is_owner(user)
+        except Exception:
+            return False
 
     async def _ensure_voice_state(self, interaction: discord.Interaction) -> GuildMusicState | None:
         voice_state = getattr(interaction.user, "voice", None)
@@ -802,6 +814,9 @@ class MusicCommands(commands.Cog):
 
     @music_group.command(name="nowplaying", description="Show current track info (static)")
     async def music_nowplaying(self, interaction: discord.Interaction) -> None:
+        if not await self._is_owner(interaction.user):
+            await interaction.response.send_message("Only the bot owner can use this command.", ephemeral=True)
+            return
         state = self.get_state(interaction.guild_id)
         if not state.current:
             await interaction.response.send_message("❌ Nothing is playing right now.", ephemeral=True)
@@ -810,6 +825,9 @@ class MusicCommands(commands.Cog):
 
     @music_group.command(name="live", description="Open the live playback dashboard")
     async def music_live(self, interaction: discord.Interaction) -> None:
+        if not await self._is_owner(interaction.user):
+            await interaction.response.send_message("Only the bot owner can use this command.", ephemeral=True)
+            return
         guild_id = interaction.guild_id
         state = self.get_state(guild_id)
 
