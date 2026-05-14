@@ -73,19 +73,19 @@ def _refresh_guild_cache() -> None:
                     gid = row.get("guild_id")
                     if gid is not None:
                         guild_ids.add(int(gid))
-            except Exception:
-                pass
+            except Exception as exc:
+                app.logger.warning("GuildSettings fallback query failed: %s", type(exc).__name__)
         if activity_col is not None:
             try:
                 for gid in activity_col.distinct("guild_id"):
                     if gid is not None:
                         guild_ids.add(int(gid))
-            except Exception:
-                pass
+            except Exception as exc:
+                app.logger.warning("ActivityData fallback query failed: %s", type(exc).__name__)
         guilds_payload = [
             {
                 "id": gid,
-                "name": f"Server {gid}",
+                "name": f"Unknown Server {gid} (DB)",
                 "description": "",
                 "member_count": 0,
                 "icon_url": "",
