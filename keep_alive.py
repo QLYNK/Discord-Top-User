@@ -47,7 +47,7 @@ CHUNK_SIZE_BYTES = 10 * 1024 * 1024
 _UPLOAD_SESSION_KEYS: dict[str, str] = {}
 _TELEMETRY_HANDLER = None
 _BOT_REF = None
-FALLBACK_GUILD_NAME_PREFIX = "Unknown Server"
+FALLBACK_GUILD_LABEL = "Unknown Server"
 _GUILD_CACHE: dict[str, Any] = {
     "updated_at": 0.0,
     "guilds": [],
@@ -75,18 +75,18 @@ def _refresh_guild_cache() -> None:
                     if gid is not None:
                         guild_ids.add(int(gid))
             except Exception as exc:
-                app.logger.warning("GuildSettings fallback query failed: %s", type(exc).__name__)
+                app.logger.warning("GuildSettings fallback query failed: %s", exc)
         if activity_col is not None:
             try:
                 for gid in activity_col.distinct("guild_id"):
                     if gid is not None:
                         guild_ids.add(int(gid))
             except Exception as exc:
-                app.logger.warning("ActivityData fallback query failed: %s", type(exc).__name__)
+                app.logger.warning("ActivityData fallback query failed: %s", exc)
         guilds_payload = [
             {
                 "id": gid,
-                "name": f"{FALLBACK_GUILD_NAME_PREFIX} {gid} (DB)",
+                "name": f"{FALLBACK_GUILD_LABEL} {gid} (DB)",
                 "description": "",
                 "member_count": 0,
                 "icon_url": "",
