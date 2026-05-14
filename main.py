@@ -5,7 +5,7 @@ import os
 import sys
 import json # Imports me add kar lena
 import secrets
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import aiohttp
 from dotenv import load_dotenv
 
@@ -234,11 +234,9 @@ async def flush_buffer():
             for u_id, count in users.items():
                 message_buffer[g_id][u_id] = message_buffer[g_id].get(u_id, 0) + count
 
-@tasks.loop(hours=1) # Missing timer fixed
+@tasks.loop(minutes=1)
 async def leaderboard_loop():
-
-
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     
     # Saare guilds ki settings fetch karo
     async for settings in db.settings_col.find({}):
@@ -246,19 +244,40 @@ async def leaderboard_loop():
         guild = bot.get_guild(guild_id)
         if not guild: continue
 
-        interval_days = settings.get("interval_days", 7)
+        interval_days = max(1, int(settings.get("interval_days", 7) or 7))
         last_reset = settings.get("last_reset_time")
+        pending_cycle_start = bool(settings.get("pending_cycle_start", False))
+
+        if last_reset and last_reset.tzinfo is None:
+            last_reset = last_reset.replace(tzinfo=timezone.utc)
 
         # Agar last_reset None hai, toh abhi ka time set kardo (first run)
         if not last_reset:
-            await db.settings_col.update_one({"guild_id": guild_id}, {"$set": {"last_reset_time": now}})
+            await db.settings_col.update_one({"guild_id": guild_id}, {"$set": {"last_reset_time": now, "pending_cycle_start": False}})
+            continue
+
+        # Future start ke liye pending flag set ho toh exact start pe cycle reset karo
+        if pending_cycle_start:
+            if now >= last_reset:
+                await db.reset_activity(guild_id)
+                await db.settings_col.update_one(
+                    {"guild_id": guild_id},
+                    {"$set": {"pending_cycle_start": False, "last_reset_time": last_reset}},
+                )
+            else:
+                continue
+        elif now < last_reset:
             continue
 
         # Check agar interval khatam ho gaya
-        if now >= last_reset + timedelta(days=interval_days):
+        due_time = last_reset + timedelta(days=interval_days)
+        if now >= due_time:
             await process_leaderboard(guild, settings)
             # Update last reset time
-            await db.settings_col.update_one({"guild_id": guild_id}, {"$set": {"last_reset_time": now}})
+            await db.settings_col.update_one(
+                {"guild_id": guild_id},
+                {"$set": {"last_reset_time": due_time, "last_result_time": now, "pending_cycle_start": False}},
+            )
 
 async def process_leaderboard(guild: discord.Guild, settings: dict):
     """Automatically logs bhejta hai, role deta hai aur list post karta hai."""
@@ -271,11 +290,14 @@ async def process_leaderboard(guild: discord.Guild, settings: dict):
 
     # 1. Pehle Logs Bhejo (Agar configured hai)
     all_users_data = await db.get_all_users(guild.id)
-    if logs_channel and all_users_data:
-        json_file = utils.generate_json_file(all_users_data)
-        guild_icon = guild.icon.url if guild.icon else ""
-        html_file = utils.generate_html_file(all_users_data, guild.name, guild_icon)
-        await logs_channel.send(f"📄 **Automatic Cycle Reset Logs**\nData before leaderboard wipe:", files=[json_file, html_file])
+    if logs_channel:
+        if all_users_data:
+            json_file = utils.generate_json_file(all_users_data)
+            guild_icon = guild.icon.url if guild.icon else ""
+            html_file = utils.generate_html_file(all_users_data, guild.name, guild_icon)
+            await logs_channel.send(f"📄 **Automatic Cycle Reset Logs**\nData before leaderboard wipe:", files=[json_file, html_file])
+        else:
+            await logs_channel.send("📄 **Automatic Cycle Reset Logs**\nNo activity data found for this cycle.")
 
     # 2. Top N Users Fetch Karo
     top_users = await db.get_top_users(guild.id, top_count)
