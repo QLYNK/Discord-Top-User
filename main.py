@@ -24,6 +24,7 @@ TOKEN = os.getenv("DISCORD_TOKEN")
 intents = discord.Intents.default()
 intents.message_content = True
 intents.members = True
+intents.presences = True
 bot = commands.Bot(command_prefix="!", intents=intents, help_command=None)
 install_global_branding_enforcer()
 keep_alive.register_bot(bot)

@@ -1,7 +1,9 @@
 import asyncio
+import re
 import time
 from datetime import datetime, timedelta, timezone
-from urllib.parse import quote
+from urllib.parse import quote, urlparse
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import aiohttp
 import discord
@@ -22,6 +24,233 @@ STUDYBOT_URL = "https://studybots.vercel.app/"
 CLOCK_OVERLAY_URL = "https://qlynk-clock.vercel.app/"
 QLYNK_NODE_URL = "https://deydeep-deqlynk.hf.space/"
 IST = timezone(timedelta(hours=5, minutes=30))
+COUNTER_TIMEZONE_OPTIONS = [
+    "UTC",
+    "Asia/Kolkata",
+    "America/New_York",
+    "Europe/London",
+    "Asia/Tokyo",
+    "Asia/Dubai",
+]
+COUNTER_KEYS: tuple[str, ...] = (
+    "member_count",
+    "total_members",
+    "bot_count",
+    "online_count",
+    "today_date",
+    "youtube_subscribers",
+    "instagram_followers",
+)
+COUNTER_LABELS: dict[str, str] = {
+    "member_count": "Human Members",
+    "total_members": "Total Members (with bots)",
+    "bot_count": "Bot Count",
+    "online_count": "Online Count",
+    "today_date": "Today Date & Time",
+    "youtube_subscribers": "YouTube Subscribers",
+    "instagram_followers": "Instagram Followers",
+}
+
+
+def _parse_compact_number(raw: str) -> int | None:
+    cleaned = (raw or "").replace(",", "").strip().lower()
+    match = re.search(r"(\d+(?:\.\d+)?)\s*([kmb]?)", cleaned)
+    if not match:
+        return None
+    value = float(match.group(1))
+    suffix = match.group(2)
+    multiplier = {"": 1, "k": 1_000, "m": 1_000_000, "b": 1_000_000_000}
+    return int(value * multiplier.get(suffix, 1))
+
+
+def _counter_defaults() -> dict:
+    return {
+        "timezone": "UTC",
+        "youtube_url": "",
+        "instagram_url": "",
+        "enabled": {key: True for key in COUNTER_KEYS},
+    }
+
+
+class CounterUrlsModal(discord.ui.Modal, title="Counter Social URLs"):
+    youtube_url = discord.ui.TextInput(
+        label="YouTube Channel URL",
+        placeholder="https://www.youtube.com/@channel",
+        required=False,
+        max_length=500,
+    )
+    instagram_url = discord.ui.TextInput(
+        label="Instagram Profile URL",
+        placeholder="https://www.instagram.com/username/",
+        required=False,
+        max_length=500,
+    )
+
+    def __init__(self, parent_view: "CounterSetupView"):
+        super().__init__()
+        self.parent_view = parent_view
+        self.youtube_url.default = parent_view.config.get("youtube_url", "")
+        self.instagram_url.default = parent_view.config.get("instagram_url", "")
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        if not self.parent_view.is_authorized(interaction):
+            await interaction.response.send_message("Only the command author can edit this setup.", ephemeral=True)
+            return
+        self.parent_view.config["youtube_url"] = self.youtube_url.value.strip()
+        self.parent_view.config["instagram_url"] = self.instagram_url.value.strip()
+        await interaction.response.send_message("✅ URLs updated.", ephemeral=True)
+        if interaction.message:
+            await interaction.message.edit(embed=self.parent_view.build_embed(), view=self.parent_view)
+
+
+class CounterTimezoneModal(discord.ui.Modal, title="Set Counter Timezone"):
+    timezone_name = discord.ui.TextInput(
+        label="IANA Timezone",
+        placeholder="Example: Asia/Kolkata",
+        required=True,
+        max_length=64,
+    )
+
+    def __init__(self, parent_view: "CounterSetupView"):
+        super().__init__()
+        self.parent_view = parent_view
+        self.timezone_name.default = parent_view.config.get("timezone", "UTC")
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        if not self.parent_view.is_authorized(interaction):
+            await interaction.response.send_message("Only the command author can edit this setup.", ephemeral=True)
+            return
+        tz = self.timezone_name.value.strip()
+        try:
+            ZoneInfo(tz)
+        except ZoneInfoNotFoundError:
+            await interaction.response.send_message("Invalid timezone. Use IANA format like `Asia/Kolkata`.", ephemeral=True)
+            return
+        self.parent_view.config["timezone"] = tz
+        self.parent_view.sync_timezone_select()
+        await interaction.response.send_message("✅ Timezone updated.", ephemeral=True)
+        if interaction.message:
+            await interaction.message.edit(embed=self.parent_view.build_embed(), view=self.parent_view)
+
+
+class CounterToggleSelect(discord.ui.Select):
+    def __init__(self, parent_view: "CounterSetupView"):
+        self.parent_view = parent_view
+        options = [discord.SelectOption(label=COUNTER_LABELS[key], value=key) for key in COUNTER_KEYS]
+        super().__init__(
+            placeholder="Select counters to enable (selected = ON)",
+            min_values=0,
+            max_values=len(options),
+            options=options,
+            row=0,
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        if not self.parent_view.is_authorized(interaction):
+            await interaction.response.send_message("Only the command author can edit this setup.", ephemeral=True)
+            return
+        selected = set(self.values)
+        for key in COUNTER_KEYS:
+            self.parent_view.config["enabled"][key] = key in selected
+        self.parent_view.sync_toggle_select_defaults()
+        await interaction.response.edit_message(embed=self.parent_view.build_embed(), view=self.parent_view)
+
+
+class CounterTimezoneSelect(discord.ui.Select):
+    def __init__(self, parent_view: "CounterSetupView"):
+        self.parent_view = parent_view
+        options = [discord.SelectOption(label=tz, value=tz) for tz in COUNTER_TIMEZONE_OPTIONS]
+        super().__init__(
+            placeholder="Select timezone",
+            min_values=1,
+            max_values=1,
+            options=options,
+            row=1,
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        if not self.parent_view.is_authorized(interaction):
+            await interaction.response.send_message("Only the command author can edit this setup.", ephemeral=True)
+            return
+        self.parent_view.config["timezone"] = self.values[0]
+        self.parent_view.sync_timezone_select()
+        await interaction.response.edit_message(embed=self.parent_view.build_embed(), view=self.parent_view)
+
+
+class CounterSetupView(discord.ui.View):
+    def __init__(self, cog: "UtilityCommands", guild_id: int, author_id: int, config: dict):
+        super().__init__(timeout=600)
+        self.cog = cog
+        self.guild_id = guild_id
+        self.author_id = author_id
+        self.config = config
+        self.toggle_select = CounterToggleSelect(self)
+        self.timezone_select = CounterTimezoneSelect(self)
+        self.add_item(self.toggle_select)
+        self.add_item(self.timezone_select)
+        self.sync_toggle_select_defaults()
+        self.sync_timezone_select()
+
+    def is_authorized(self, interaction: discord.Interaction) -> bool:
+        return interaction.user.id == self.author_id and interaction.guild_id == self.guild_id
+
+    def sync_toggle_select_defaults(self) -> None:
+        selected = set(key for key in COUNTER_KEYS if self.config["enabled"].get(key, False))
+        for option in self.toggle_select.options:
+            option.default = option.value in selected
+
+    def sync_timezone_select(self) -> None:
+        configured = self.config.get("timezone", "UTC")
+        for option in self.timezone_select.options:
+            option.default = option.value == configured
+
+    def build_embed(self) -> discord.Embed:
+        embed = discord.Embed(title="🔢 Counter Setup", color=0x5865F2)
+        enabled_rows = [
+            f"• {COUNTER_LABELS[key]}: {'✅' if self.config['enabled'].get(key, False) else '❌'}"
+            for key in COUNTER_KEYS
+        ]
+        embed.add_field(name="Toggles", value="\n".join(enabled_rows), inline=False)
+        embed.add_field(name="Timezone", value=self.config.get("timezone", "UTC"), inline=True)
+        embed.add_field(name="YouTube URL", value=self.config.get("youtube_url", "Not set") or "Not set", inline=False)
+        embed.add_field(name="Instagram URL", value=self.config.get("instagram_url", "Not set") or "Not set", inline=False)
+        embed.set_footer(text="Use dropdowns/buttons below, then save.")
+        return embed
+
+    @discord.ui.button(label="Edit URLs", style=discord.ButtonStyle.secondary, row=2)
+    async def edit_urls(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        if not self.is_authorized(interaction):
+            await interaction.response.send_message("Only the command author can edit this setup.", ephemeral=True)
+            return
+        await interaction.response.send_modal(CounterUrlsModal(self))
+
+    @discord.ui.button(label="Custom Timezone", style=discord.ButtonStyle.secondary, row=2)
+    async def custom_timezone(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        if not self.is_authorized(interaction):
+            await interaction.response.send_message("Only the command author can edit this setup.", ephemeral=True)
+            return
+        await interaction.response.send_modal(CounterTimezoneModal(self))
+
+    @discord.ui.button(label="Preview Counter", style=discord.ButtonStyle.primary, row=3)
+    async def preview_counter(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        if not self.is_authorized(interaction):
+            await interaction.response.send_message("Only the command author can use this setup.", ephemeral=True)
+            return
+        guild = interaction.guild or self.cog.bot.get_guild(self.guild_id)
+        if not guild:
+            await interaction.response.send_message("Guild context is no longer available.", ephemeral=True)
+            return
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        embed = await self.cog._build_counter_embed(guild, self.config)
+        await interaction.followup.send(embed=embed, ephemeral=True)
+
+    @discord.ui.button(label="Save", style=discord.ButtonStyle.success, row=3)
+    async def save(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        if not self.is_authorized(interaction):
+            await interaction.response.send_message("Only the command author can save this setup.", ephemeral=True)
+            return
+        await db.update_guild_settings(self.guild_id, {"counter_config": self.config})
+        await interaction.response.edit_message(content="✅ Counter setup saved.", embed=self.build_embed(), view=self)
 
 
 class PollView(discord.ui.View):
@@ -151,6 +380,7 @@ HELP_CATEGORIES: dict[str, dict[str, object]] = {
         "items": [
             "`/help`",
             "`/server`",
+            "`/counter`",
             "`/links`",
             "`/stats`",
             "`/now`",
@@ -256,12 +486,18 @@ class RolePaginationView(discord.ui.View):
 
 
 class RoleInfoSelect(discord.ui.Select):
-    def __init__(self, roles: list[discord.Role]):
+    def __init__(self, roles: list[discord.Role], *, page: int = 0, total_pages: int = 1):
         options = [
             discord.SelectOption(label=role.name[:100], value=str(role.id), description=f"{len(role.members)} members")
             for role in roles[:25]
         ]
-        super().__init__(placeholder="Select a role to inspect", min_values=1, max_values=1, options=options)
+        super().__init__(
+            placeholder=f"Select role (page {page + 1}/{total_pages})",
+            min_values=1,
+            max_values=1,
+            options=options,
+            row=0,
+        )
 
     @staticmethod
     def _permission_summary(role: discord.Role) -> str:
@@ -297,21 +533,108 @@ class ServerInfoView(discord.ui.View):
     def __init__(self, guild: discord.Guild):
         super().__init__(timeout=300)
         self.guild_id = guild.id
-        selectable_roles = [r for r in sorted(guild.roles, key=lambda role: role.position, reverse=True) if r.name != "@everyone"]
-        if selectable_roles:
-            self.add_item(RoleInfoSelect(selectable_roles[:25]))
+        self.selectable_roles = [r for r in sorted(guild.roles, key=lambda role: role.position, reverse=True) if r.name != "@everyone"]
+        self.role_page = 0
+        self._sync_role_select()
+        self._sync_role_buttons()
+
+    def _role_chunks(self) -> list[list[discord.Role]]:
+        if not self.selectable_roles:
+            return []
+        return [self.selectable_roles[i:i + 25] for i in range(0, len(self.selectable_roles), 25)]
+
+    def _sync_role_select(self) -> None:
+        for item in list(self.children):
+            if isinstance(item, RoleInfoSelect):
+                self.remove_item(item)
+        chunks = self._role_chunks()
+        if not chunks:
+            return
+        self.role_page = max(0, min(self.role_page, len(chunks) - 1))
+        self.add_item(RoleInfoSelect(chunks[self.role_page], page=self.role_page, total_pages=len(chunks)))
+
+    def _sync_role_buttons(self) -> None:
+        chunks = self._role_chunks()
+        enabled = len(chunks) > 1
+        self.prev_role_page.disabled = not enabled or self.role_page <= 0
+        self.next_role_page.disabled = not enabled or self.role_page >= (len(chunks) - 1)
+
+    @discord.ui.button(label="Roles ◀", style=discord.ButtonStyle.secondary, row=1)
+    async def prev_role_page(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        if not interaction.guild or interaction.guild.id != self.guild_id:
+            await interaction.response.send_message("❌ This interaction is no longer valid.", ephemeral=True)
+            return
+        self.role_page = max(0, self.role_page - 1)
+        self._sync_role_select()
+        self._sync_role_buttons()
+        await interaction.response.edit_message(view=self)
+
+    @discord.ui.button(label="Roles ▶", style=discord.ButtonStyle.secondary, row=1)
+    async def next_role_page(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        if not interaction.guild or interaction.guild.id != self.guild_id:
+            await interaction.response.send_message("❌ This interaction is no longer valid.", ephemeral=True)
+            return
+        self.role_page += 1
+        self._sync_role_select()
+        self._sync_role_buttons()
+        await interaction.response.edit_message(view=self)
 
     @discord.ui.button(label="Role List", style=discord.ButtonStyle.primary, custom_id="server_role_list")
     async def role_list(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
         if not interaction.guild or interaction.guild.id != self.guild_id:
             await interaction.response.send_message("❌ This interaction is no longer valid.", ephemeral=True)
             return
+        roles = [r for r in sorted(interaction.guild.roles, key=lambda role: role.position, reverse=True) if r.name != "@everyone"]
+        if not roles:
+            await interaction.response.send_message("No roles found.", ephemeral=True)
+            return
+        view = RoleListPaginationView(interaction.guild_id, page=0)
+        embed = view._embed(interaction.guild, roles, page=0)
+        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
-        role_names = [r.name for r in interaction.guild.roles if r.name != "@everyone"]
-        content = ", ".join(role_names) if role_names else "No roles found."
-        if len(content) > 1900:
-            content = content[:1900] + "…"
-        await interaction.response.send_message(f"**Server Roles:**\n{content}", ephemeral=True)
+
+class RoleListPaginationView(discord.ui.View):
+    def __init__(self, guild_id: int, page: int, page_size: int = 15):
+        super().__init__(timeout=300)
+        self.guild_id = guild_id
+        self.page = page
+        self.page_size = page_size
+
+    def _embed(self, guild: discord.Guild, roles: list[discord.Role], page: int) -> discord.Embed:
+        total_pages = max(1, (len(roles) + self.page_size - 1) // self.page_size)
+        page = max(0, min(page, total_pages - 1))
+        start = page * self.page_size
+        chunk = roles[start:start + self.page_size]
+        lines = [
+            f"{start + idx}. {role.mention} — `{len(role.members)}` members"
+            for idx, role in enumerate(chunk, start=1)
+        ]
+        embed = discord.Embed(title=f"🏷️ Roles in {guild.name}", color=0x5865F2)
+        embed.description = "\n".join(lines) if lines else "No roles found."
+        embed.set_footer(text=f"Page {page + 1}/{total_pages}")
+        return embed
+
+    async def _send_page(self, interaction: discord.Interaction, target_page: int) -> None:
+        guild = interaction.guild if interaction.guild and interaction.guild.id == self.guild_id else None
+        if not guild:
+            await interaction.response.send_message("❌ This interaction is no longer valid.", ephemeral=True)
+            return
+        roles = [r for r in sorted(guild.roles, key=lambda role: role.position, reverse=True) if r.name != "@everyone"]
+        if not roles:
+            await interaction.response.send_message("No roles found.", ephemeral=True)
+            return
+        total_pages = max(1, (len(roles) + self.page_size - 1) // self.page_size)
+        self.page = max(0, min(target_page, total_pages - 1))
+        view = RoleListPaginationView(self.guild_id, page=self.page, page_size=self.page_size) if total_pages > 1 else None
+        await interaction.response.send_message(embed=self._embed(guild, roles, self.page), view=view, ephemeral=True)
+
+    @discord.ui.button(label="Previous", style=discord.ButtonStyle.secondary)
+    async def previous(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        await self._send_page(interaction, self.page - 1)
+
+    @discord.ui.button(label="Next", style=discord.ButtonStyle.primary)
+    async def next(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        await self._send_page(interaction, self.page + 1)
 
 
 class UtilityCommands(commands.Cog):
@@ -323,6 +646,132 @@ class UtilityCommands(commands.Cog):
 
     def __init__(self, bot: commands.Bot):
         self.bot = bot
+
+    @staticmethod
+    def _normalized_counter_config(settings: dict | None) -> dict:
+        defaults = _counter_defaults()
+        raw = (settings or {}).get("counter_config") if isinstance(settings, dict) else None
+        if not isinstance(raw, dict):
+            return defaults
+        enabled_raw = raw.get("enabled", {})
+        defaults["enabled"] = {
+            key: bool(enabled_raw.get(key, defaults["enabled"][key])) if isinstance(enabled_raw, dict) else defaults["enabled"][key]
+            for key in COUNTER_KEYS
+        }
+        defaults["timezone"] = str(raw.get("timezone") or defaults["timezone"])
+        defaults["youtube_url"] = str(raw.get("youtube_url") or "").strip()
+        defaults["instagram_url"] = str(raw.get("instagram_url") or "").strip()
+        return defaults
+
+    @staticmethod
+    async def _ensure_member_cache(guild: discord.Guild) -> None:
+        if not guild.chunked:
+            try:
+                await guild.chunk(cache=True)
+            except Exception:
+                return
+
+    async def _online_count(self, guild: discord.Guild) -> int:
+        await self._ensure_member_cache(guild)
+        if guild.members:
+            return sum(1 for member in guild.members if member.status in {discord.Status.online, discord.Status.idle, discord.Status.dnd})
+        try:
+            fetched = await self.bot.fetch_guild(guild.id, with_counts=True)
+            if fetched.approximate_presence_count is not None:
+                return int(fetched.approximate_presence_count)
+        except Exception:
+            pass
+        return 0
+
+    async def _bot_count(self, guild: discord.Guild) -> int:
+        await self._ensure_member_cache(guild)
+        return sum(1 for member in guild.members if member.bot)
+
+    @staticmethod
+    def _format_number(value: int | None) -> str:
+        if value is None:
+            return "Unavailable"
+        return f"{int(value):,}"
+
+    async def _format_bot_owner_field(self) -> str:
+        app_info = await self.bot.application_info()
+        team = getattr(app_info, "team", None)
+        if team and getattr(team, "members", None):
+            owner_id = getattr(team, "owner_id", None) or getattr(team, "owner_user_id", None)
+            owner_mentions: list[str] = []
+            member_mentions: list[str] = []
+            for member in team.members:
+                mention = f"<@{member.id}>"
+                role_name = str(getattr(member, "role", "")).lower()
+                if member.id == owner_id or role_name.endswith("owner"):
+                    owner_mentions.append(mention)
+                else:
+                    member_mentions.append(mention)
+            owner_text = ", ".join(owner_mentions) if owner_mentions else "Unavailable"
+            member_text = ", ".join(member_mentions) if member_mentions else "None"
+            return f"Team Owner: {owner_text}\nTeam Members: {member_text}"
+        owner = app_info.owner
+        return f"<@{owner.id}>" if owner else "Unknown"
+
+    async def _fetch_page_text(self, url: str) -> str | None:
+        if not url:
+            return None
+        timeout = aiohttp.ClientTimeout(total=20)
+        headers = {
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+            ),
+            "Accept-Language": "en-US,en;q=0.9",
+        }
+        try:
+            async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
+                async with session.get(url, allow_redirects=True) as response:
+                    if response.status >= 400:
+                        return None
+                    return await response.text()
+        except Exception:
+            return None
+
+    @staticmethod
+    def _url_matches_domains(url: str, allowed_domains: tuple[str, ...]) -> bool:
+        try:
+            parsed = urlparse(url)
+        except Exception:
+            return False
+        if parsed.scheme not in {"http", "https"}:
+            return False
+        host = (parsed.hostname or "").lower()
+        return any(host == domain or host.endswith(f".{domain}") for domain in allowed_domains)
+
+    @staticmethod
+    def _youtube_subscribers_from_html(html: str | None) -> int | None:
+        if not html:
+            return None
+        patterns = [
+            r'"subscriberCountText"\s*:\s*\{"simpleText"\s*:\s*"([^"]+)"',
+            r'"subscriberCountText".*?"label"\s*:\s*"([^"]+?subscribers?)"',
+        ]
+        for pattern in patterns:
+            match = re.search(pattern, html, flags=re.IGNORECASE | re.DOTALL)
+            if not match:
+                continue
+            value = _parse_compact_number(match.group(1))
+            if value is not None:
+                return value
+        return None
+
+    @staticmethod
+    def _instagram_followers_from_html(html: str | None) -> int | None:
+        if not html:
+            return None
+        edge_match = re.search(r'"edge_followed_by"\s*:\s*\{"count"\s*:\s*(\d+)\}', html)
+        if edge_match:
+            return int(edge_match.group(1))
+        meta_match = re.search(r'([\d.,]+)\s+Followers', html, flags=re.IGNORECASE)
+        if meta_match:
+            return _parse_compact_number(meta_match.group(1))
+        return None
 
     @staticmethod
     def _stats_links_view() -> discord.ui.View:
@@ -392,11 +841,10 @@ class UtilityCommands(commands.Cog):
 
         await interaction.response.defer(thinking=True)
         owner = guild.owner or (await self.bot.fetch_user(guild.owner_id) if guild.owner_id else None)
-        bots = sum(1 for member in guild.members if member.bot)
-        online = sum(1 for member in guild.members if member.status != discord.Status.offline)
-
-        app_info = await self.bot.application_info()
-        bot_owner = app_info.owner
+        await self._ensure_member_cache(guild)
+        bots = await self._bot_count(guild)
+        online = await self._online_count(guild)
+        bot_owner = await self._format_bot_owner_field()
         now_ts = int(time.time())
         start_ts = int(self.bot.start_time.replace(tzinfo=timezone.utc).timestamp()) if getattr(self.bot, "start_time", None) else now_ts
 
@@ -416,7 +864,7 @@ class UtilityCommands(commands.Cog):
         if self.bot.user and self.bot.user.display_avatar:
             embed.set_author(name=f"{self.bot.user.name}", icon_url=self.bot.user.display_avatar.url)
 
-        embed.add_field(name="Bot Owner", value=str(bot_owner), inline=True)
+        embed.add_field(name="Bot Owner", value=bot_owner, inline=False)
         embed.add_field(name="Uptime", value=f"<t:{start_ts}:R>", inline=True)
         embed.add_field(name="API Latency", value=f"{round(self.bot.latency * 1000)} ms", inline=True)
         embed.set_footer(text="Professional utility dashboard")
@@ -448,6 +896,73 @@ class UtilityCommands(commands.Cog):
         async with session.get(weather_url) as response:
             response.raise_for_status()
             return await response.json()
+
+    async def _build_counter_embed(self, guild: discord.Guild, config: dict) -> discord.Embed:
+        timezone_name = config.get("timezone", "UTC")
+        try:
+            tz = ZoneInfo(timezone_name)
+        except ZoneInfoNotFoundError:
+            timezone_name = "UTC"
+            tz = ZoneInfo("UTC")
+            config["timezone"] = "UTC"
+
+        await self._ensure_member_cache(guild)
+        total_members = int(guild.member_count or len(guild.members) or 0)
+        bot_count = await self._bot_count(guild)
+        human_members = max(0, total_members - bot_count)
+        online_count = await self._online_count(guild)
+        now_local = datetime.now(tz)
+
+        youtube_count = None
+        instagram_count = None
+        youtube_ok = self._url_matches_domains(config.get("youtube_url", ""), ("youtube.com", "youtu.be"))
+        insta_ok = self._url_matches_domains(config.get("instagram_url", ""), ("instagram.com",))
+        if config["enabled"].get("youtube_subscribers") and config.get("youtube_url") and youtube_ok:
+            youtube_html = await self._fetch_page_text(config["youtube_url"])
+            youtube_count = self._youtube_subscribers_from_html(youtube_html)
+        if config["enabled"].get("instagram_followers") and config.get("instagram_url") and insta_ok:
+            instagram_html = await self._fetch_page_text(config["instagram_url"])
+            instagram_count = self._instagram_followers_from_html(instagram_html)
+
+        embed = discord.Embed(
+            title=f"🔢 Counter • {guild.name}",
+            color=0x5865F2,
+            timestamp=datetime.now(timezone.utc),
+        )
+        if guild.icon:
+            embed.set_thumbnail(url=guild.icon.url)
+
+        if config["enabled"].get("member_count"):
+            embed.add_field(name="Human Members", value=self._format_number(human_members), inline=True)
+        if config["enabled"].get("total_members"):
+            embed.add_field(name="Total Members (with bots)", value=self._format_number(total_members), inline=True)
+        if config["enabled"].get("bot_count"):
+            embed.add_field(name="Bot Count", value=self._format_number(bot_count), inline=True)
+        if config["enabled"].get("online_count"):
+            embed.add_field(name="Online Count", value=self._format_number(online_count), inline=True)
+        if config["enabled"].get("today_date"):
+            embed.add_field(
+                name=f"Today ({timezone_name})",
+                value=f"{now_local.strftime('%Y-%m-%d')}\n{now_local.strftime('%H:%M:%S')}",
+                inline=True,
+            )
+        if config["enabled"].get("youtube_subscribers"):
+            status = self._format_number(youtube_count) if youtube_count is not None else "Unavailable"
+            if not config.get("youtube_url"):
+                status = "URL not set"
+            elif not youtube_ok:
+                status = "Invalid YouTube URL"
+            embed.add_field(name="YouTube Subscribers", value=status, inline=True)
+        if config["enabled"].get("instagram_followers"):
+            status = self._format_number(instagram_count) if instagram_count is not None else "Unavailable"
+            if not config.get("instagram_url"):
+                status = "URL not set"
+            elif not insta_ok:
+                status = "Invalid Instagram URL"
+            embed.add_field(name="Instagram Followers", value=status, inline=True)
+
+        embed.set_footer(text="Social counters use public page data (no API key).")
+        return embed
 
     @app_commands.command(name="weather", description="Get current weather for top location matches")
     async def weather(self, interaction: discord.Interaction, city: str):
@@ -580,8 +1095,9 @@ class UtilityCommands(commands.Cog):
             await interaction.response.send_message("This command can only be used in a server.", ephemeral=True)
             return
 
-        online = sum(1 for member in guild.members if member.status != discord.Status.offline)
-        bots = sum(1 for member in guild.members if member.bot)
+        await self._ensure_member_cache(guild)
+        online = await self._online_count(guild)
+        bots = await self._bot_count(guild)
         embed = discord.Embed(
             title="🏛️ Server Information Hub",
             description=guild.description or "No server description set.",
@@ -598,6 +1114,20 @@ class UtilityCommands(commands.Cog):
         embed.set_footer(text="Use Role List + Role Selector for deeper role insights")
         await interaction.response.send_message(embed=embed, view=ServerInfoView(guild))
         await self._emit_utility_logs(interaction, activity_type="Server Hub", details="Opened server information hub.")
+
+    @app_commands.command(name="counter", description="Configure and preview live member/social counters")
+    async def counter(self, interaction: discord.Interaction):
+        guild = interaction.guild
+        if not guild:
+            await interaction.response.send_message("This command can only be used in a server.", ephemeral=True)
+            return
+
+        settings = await db.get_guild_settings(guild.id)
+        config = self._normalized_counter_config(settings)
+        view = CounterSetupView(self, guild.id, interaction.user.id, config)
+        embed = view.build_embed()
+        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+        await self._emit_utility_logs(interaction, activity_type="Counter Setup", details="Opened counter setup panel.")
 
     @app_commands.command(name="poll", description="Create an interactive poll with up to 5 options")
     async def poll(
