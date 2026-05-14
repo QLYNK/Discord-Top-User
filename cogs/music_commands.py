@@ -548,18 +548,19 @@ class MusicCommands(commands.Cog):
         state = await self._ensure_voice_state(interaction)
         if not state:
             return
-        channel = interaction.user.voice.channel
+        connected_channel = state.voice_client.channel if state.voice_client else None
+        channel_name = connected_channel.name if connected_channel else "Unknown Channel"
         await self.persist_state(interaction.guild_id)
 
-        embed = discord.Embed(title="✅ Joined Voice Channel", description=f"Connected to **{channel.name}**.", color=0x1DB954)
+        embed = discord.Embed(title="✅ Joined Voice Channel", description=f"Connected to **{channel_name}**.", color=0x1DB954)
         embed.set_footer(text="an app by deep")
         await interaction.followup.send(embed=embed, view=_base_view())
         await self._emit_music_logs(
             guild=interaction.guild,
             user=interaction.user,
             activity_type="Voice Channel Join",
-            details=f"Joined voice channel: {channel.name}.",
-            fields=[("Voice Channel", channel.name, True)],
+            details=f"Joined voice channel: {channel_name}.",
+            fields=[("Voice Channel", channel_name, True)],
             jump_url=interaction.channel.jump_url if isinstance(interaction.channel, discord.TextChannel) else None,
         )
 

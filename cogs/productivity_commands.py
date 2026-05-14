@@ -636,8 +636,12 @@ class ProductivityCommands(commands.Cog):
             return
 
         await interaction.response.defer(thinking=True, ephemeral=True)
-        await self._end_afk(interaction.user, interaction.channel)
-        await interaction.followup.send("✅ Your AFK status has been ended.", ephemeral=True)
+        ended = await self._end_afk(interaction.user, interaction.channel)
+        if ended:
+            await interaction.followup.send("✅ Your AFK status has been ended.", ephemeral=True)
+        else:
+            await interaction.followup.send("You do not have an active AFK status.", ephemeral=True)
+            return
         await self._log_afk_event(
             interaction,
             activity_type="AFK Ended",
