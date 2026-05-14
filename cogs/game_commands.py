@@ -2193,13 +2193,13 @@ class GameCommands(commands.Cog):
     async def myprofile(self, interaction: discord.Interaction):
         await interaction.response.defer()
 
-        profile = await db.get_user_profile(interaction.user.id)
+        profile = await db.get_user_profile(interaction.user.id) or {"points": 0, "wins": 0, "losses": 0, "total_games": 0}
         global_rank = await db.get_user_global_rank(interaction.user.id)
         sorted_profiles = await db.get_sorted_user_profiles()
         guild_member_ids = {member.id for member in interaction.guild.members}
-        server_profiles = [item for item in sorted_profiles if item["user_id"] in guild_member_ids]
+        server_profiles = [item for item in sorted_profiles if int(item.get("user_id", 0)) in guild_member_ids]
         server_rank = next(
-            (idx for idx, item in enumerate(server_profiles, start=1) if item["user_id"] == interaction.user.id),
+            (idx for idx, item in enumerate(server_profiles, start=1) if int(item.get("user_id", 0)) == interaction.user.id),
             len(server_profiles) + 1,
         )
 

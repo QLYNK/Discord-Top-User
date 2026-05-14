@@ -331,5 +331,6 @@ async def process_leaderboard(guild: discord.Guild, settings: dict):
 
 # Start bot + Keep Alive
 if __name__ == "__main__":
-    keep_alive.keep_alive()  # Starts the Flask server
+    if os.getenv("SEPARATE_WEBSITE_PROCESS", "0") != "1":
+        keep_alive.keep_alive()  # Starts the Flask server
     bot.run(TOKEN)

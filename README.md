@@ -82,7 +82,7 @@ python main.py
 2. In Render, create a **New Web Service** from this repository.
 3. Configure service to build using Docker and point to **`Docerfile`**.
 4. Set environment variables from the list below.
-5. Deploy and monitor logs (the web API + bot both auto-start from `python main.py`).
+5. Deploy and monitor logs (Docker now starts both `main.py` and `website.py` together).
 
 ### API runtime compatibility
 

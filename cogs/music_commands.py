@@ -280,6 +280,32 @@ class MusicCommands(commands.Cog):
             self._states[guild_id] = GuildMusicState()
         return self._states[guild_id]
 
+    async def _ensure_voice_state(self, interaction: discord.Interaction) -> GuildMusicState | None:
+        voice_state = getattr(interaction.user, "voice", None)
+        if not voice_state or not voice_state.channel:
+            await interaction.followup.send("❌ Join a voice channel first.", ephemeral=True)
+            return None
+
+        state = self.get_state(interaction.guild_id)
+        target_channel = voice_state.channel
+        try:
+            if state.voice_client and state.voice_client.is_connected():
+                if state.voice_client.channel and state.voice_client.channel.id != target_channel.id:
+                    await state.voice_client.move_to(target_channel)
+            else:
+                state.voice_client = await target_channel.connect(reconnect=True)
+        except Exception:
+            try:
+                if state.voice_client:
+                    await state.voice_client.disconnect(force=True)
+            except Exception as disconnect_exc:
+                print(f"[Music] Voice disconnect during reconnect failed: {type(disconnect_exc).__name__}")
+            state.voice_client = await target_channel.connect(reconnect=True)
+
+        state.channel_id = target_channel.id
+        state.text_channel_id = interaction.channel_id
+        return state
+
     async def _emit_music_logs(
         self,
         *,
@@ -453,14 +479,9 @@ class MusicCommands(commands.Cog):
             await interaction.followup.send("❌ Track URL missing in database.", ephemeral=True)
             return
 
-        state = self.get_state(interaction.guild_id)
-        channel = interaction.user.voice.channel
-        if state.voice_client and state.voice_client.is_connected():
-            await state.voice_client.move_to(channel)
-        else:
-            state.voice_client = await channel.connect()
-        state.channel_id = channel.id
-        state.text_channel_id = interaction.channel_id
+        state = await self._ensure_voice_state(interaction)
+        if not state:
+            return
 
         state.queue.append(track)
         state.next_track = track
@@ -524,25 +545,22 @@ class MusicCommands(commands.Cog):
             return
 
         await interaction.response.defer(thinking=True)
-        channel = interaction.user.voice.channel
-        state = self.get_state(interaction.guild_id)
-        if state.voice_client and state.voice_client.is_connected():
-            await state.voice_client.move_to(channel)
-        else:
-            state.voice_client = await channel.connect()
-        state.channel_id = channel.id
-        state.text_channel_id = interaction.channel_id
+        state = await self._ensure_voice_state(interaction)
+        if not state:
+            return
+        connected_channel = state.voice_client.channel if state.voice_client else None
+        channel_name = connected_channel.name if connected_channel else "Unknown Channel"
         await self.persist_state(interaction.guild_id)
 
-        embed = discord.Embed(title="✅ Joined Voice Channel", description=f"Connected to **{channel.name}**.", color=0x1DB954)
+        embed = discord.Embed(title="✅ Joined Voice Channel", description=f"Connected to **{channel_name}**.", color=0x1DB954)
         embed.set_footer(text="an app by deep")
         await interaction.followup.send(embed=embed, view=_base_view())
         await self._emit_music_logs(
             guild=interaction.guild,
             user=interaction.user,
             activity_type="Voice Channel Join",
-            details=f"Joined voice channel: {channel.name}.",
-            fields=[("Voice Channel", channel.name, True)],
+            details=f"Joined voice channel: {channel_name}.",
+            fields=[("Voice Channel", channel_name, True)],
             jump_url=interaction.channel.jump_url if isinstance(interaction.channel, discord.TextChannel) else None,
         )
 
@@ -601,12 +619,14 @@ class MusicCommands(commands.Cog):
 
     @music_group.command(name="start", description="Start playing the saved queue")
     async def music_start(self, interaction: discord.Interaction) -> None:
-        state = self.get_state(interaction.guild_id)
-        if not state.voice_client or not state.voice_client.is_connected():
-            await interaction.response.send_message("❌ Use `/music join` first.", ephemeral=True)
+        if not interaction.user.voice or not interaction.user.voice.channel:
+            await interaction.response.send_message("❌ Join a voice channel first.", ephemeral=True)
             return
 
         await interaction.response.defer(thinking=True)
+        state = await self._ensure_voice_state(interaction)
+        if not state:
+            return
         tracks = await music_col.find({}, {"title": 1, "name": 1, "file_url": 1, "url": 1, "artwork_url": 1}).to_list(length=None)
         queue = []
         for t in tracks:
@@ -649,6 +669,17 @@ class MusicCommands(commands.Cog):
                 state.current = None
                 state.paused = False
                 await self.persist_state(guild_id)
+
+                if not state.voice_client or not state.voice_client.is_connected():
+                    guild = self.bot.get_guild(guild_id)
+                    channel = guild.get_channel(state.channel_id) if guild and state.channel_id else None
+                    if not channel or not isinstance(channel, discord.VoiceChannel):
+                        break
+                    try:
+                        state.voice_client = await channel.connect(reconnect=True)
+                    except Exception as reconnect_exc:
+                        print(f"[Music] Voice reconnect failed: {type(reconnect_exc).__name__}")
+                        break
 
                 mp3_path = await smart_download(track["file_url"])
                 if not mp3_path:
@@ -723,12 +754,14 @@ class MusicCommands(commands.Cog):
 
     @music_group.command(name="temp", description="Play temporary link and auto-delete local file")
     async def music_temp(self, interaction: discord.Interaction, link: str) -> None:
-        state = self.get_state(interaction.guild_id)
-        if not state.voice_client or not state.voice_client.is_connected():
-            await interaction.response.send_message("❌ Use `/music join` first.", ephemeral=True)
+        if not interaction.user.voice or not interaction.user.voice.channel:
+            await interaction.response.send_message("❌ Join a voice channel first.", ephemeral=True)
             return
 
         await interaction.response.defer(thinking=True)
+        state = await self._ensure_voice_state(interaction)
+        if not state:
+            return
         mp3_path = await download_and_convert(link)
         if not mp3_path:
             await interaction.followup.send("❌ Failed to process the temporary track.", ephemeral=True)
