@@ -52,7 +52,9 @@ async def get_guild_settings(guild_id: int):
             "reward_role_id": None,
             "interval_days": 7,  # Default weekly
             "top_count": 3,      # Default top 3
-            "last_reset_time": None
+            "last_reset_time": None,
+            "last_result_time": None,
+            "pending_cycle_start": False,
         }
         await settings_col.insert_one(settings)
     return settings
