@@ -41,6 +41,7 @@ tad_col = sync_mongo_client["LeaderboardBotDB"]["TruthOrDare"] if sync_mongo_cli
 quiz_col = sync_mongo_client["LeaderboardBotDB"]["QuizQuestions"] if sync_mongo_client else None
 activity_col = sync_mongo_client["LeaderboardBotDB"]["ActivityData"] if sync_mongo_client else None
 settings_col = sync_mongo_client["LeaderboardBotDB"]["GuildSettings"] if sync_mongo_client else None
+public_guilds_col = sync_mongo_client["LeaderboardBotDB"]["PublicGuildDiscovery"] if sync_mongo_client else None
 UPLOAD_ID_PATTERN = r"^[a-fA-F0-9-]{8,64}$"
 MAX_CHUNKS = 4096
 CHUNK_SIZE_BYTES = 10 * 1024 * 1024
@@ -48,11 +49,91 @@ _UPLOAD_SESSION_KEYS: dict[str, str] = {}
 _TELEMETRY_HANDLER = None
 _BOT_REF = None
 FALLBACK_GUILD_LABEL = "Unknown Server"
+DEFAULT_BOT_INVITE_URL = (
+    "https://discord.com/oauth2/authorize?client_id=1503257840356163584"
+    "&permissions=6835289926782017&integration_type=0&scope=bot"
+)
 _GUILD_CACHE: dict[str, Any] = {
     "updated_at": 0.0,
     "guilds": [],
     "total_members": 0,
 }
+
+
+def _safe_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _live_top_users_for_guild(guild, top_count: int) -> list[dict[str, Any]]:
+    if activity_col is None:
+        return []
+
+    safe_limit = max(1, min(25, _safe_int(top_count, 3)))
+    top_users: list[dict[str, Any]] = []
+    try:
+        cursor = activity_col.find({"guild_id": int(guild.id)}).sort("message_count", -1).limit(safe_limit)
+        for row in cursor:
+            user_id = _safe_int(row.get("user_id"))
+            if user_id <= 0:
+                continue
+            message_count = _safe_int(row.get("message_count"))
+            member = guild.get_member(user_id)
+            display_name = member.display_name if member else f"User {user_id}"
+            top_users.append(
+                {
+                    "user_id": user_id,
+                    "display_name": str(display_name),
+                    "message_count": message_count,
+                }
+            )
+    except Exception:
+        return []
+    return top_users
+
+
+def _normalize_public_guild_payload(doc: dict[str, Any]) -> dict[str, Any]:
+    top_count = max(1, _safe_int(doc.get("top_count"), 3))
+    top_users_raw = doc.get("top_users") if isinstance(doc.get("top_users"), list) else []
+    top_users = []
+    for row in top_users_raw:
+        if not isinstance(row, dict):
+            continue
+        uid = _safe_int(row.get("user_id"))
+        if uid <= 0:
+            continue
+        top_users.append(
+            {
+                "user_id": uid,
+                "display_name": str(row.get("display_name") or f"User {uid}"),
+                "message_count": _safe_int(row.get("message_count")),
+            }
+        )
+        if len(top_users) >= top_count:
+            break
+
+    member_plus_bots = _safe_int(doc.get("member_plus_bots_count"), _safe_int(doc.get("member_count")))
+    bots = max(0, _safe_int(doc.get("bots")))
+    humans = max(0, _safe_int(doc.get("total_members"), max(0, member_plus_bots - bots)))
+
+    return {
+        "id": _safe_int(doc.get("guild_id"), _safe_int(doc.get("id"))),
+        "name": str(doc.get("name") or f"{FALLBACK_GUILD_LABEL} {_safe_int(doc.get('guild_id'))}"),
+        "description": str(doc.get("description") or ""),
+        "icon_url": str(doc.get("icon_url") or doc.get("photo") or ""),
+        "photo": str(doc.get("photo") or doc.get("icon_url") or ""),
+        "invite_url": str(doc.get("invite_url") or DEFAULT_BOT_INVITE_URL),
+        "member_count": member_plus_bots,
+        "total_members": humans,
+        "bots": bots,
+        "member_plus_bots_count": member_plus_bots,
+        "current_online": max(0, _safe_int(doc.get("current_online"))),
+        "top_count": top_count,
+        "top_users": top_users,
+        "bot_integration_status": str(doc.get("bot_integration_status") or "Bot Unavailable (Cached Snapshot)"),
+    }
 
 
 def register_telemetry_handler(handler):
@@ -67,6 +148,19 @@ def register_bot(bot):
 
 def _refresh_guild_cache() -> None:
     if not _BOT_REF:
+        if public_guilds_col is not None:
+            try:
+                docs = list(public_guilds_col.find({}, {"_id": 0}))
+                docs.sort(key=lambda x: str(x.get("name", "")).lower())
+                guilds_payload = [_normalize_public_guild_payload(doc) for doc in docs if _safe_int(doc.get("guild_id")) > 0]
+                if guilds_payload:
+                    _GUILD_CACHE["updated_at"] = time.time()
+                    _GUILD_CACHE["guilds"] = guilds_payload
+                    _GUILD_CACHE["total_members"] = sum(_safe_int(g.get("member_plus_bots_count")) for g in guilds_payload)
+                    return
+            except Exception as exc:
+                app.logger.warning("PublicGuildDiscovery fallback query failed: %s", exc)
+
         guild_ids: set[int] = set()
         if settings_col is not None:
             try:
@@ -89,8 +183,16 @@ def _refresh_guild_cache() -> None:
                 "name": f"{FALLBACK_GUILD_LABEL} {gid}",
                 "description": "",
                 "member_count": 0,
+                "total_members": 0,
+                "bots": 0,
+                "member_plus_bots_count": 0,
+                "current_online": 0,
                 "icon_url": "",
-                "bot_integration_status": "Bot Unavailable (DB Fallback)",
+                "photo": "",
+                "invite_url": DEFAULT_BOT_INVITE_URL,
+                "top_count": 3,
+                "top_users": [],
+                "bot_integration_status": "Bot Unavailable (No Snapshot)",
             }
             for gid in sorted(guild_ids)
         ]
@@ -103,18 +205,87 @@ def _refresh_guild_cache() -> None:
     total_members = 0
     try:
         for guild in list(_BOT_REF.guilds):
-            member_count = int(guild.member_count or 0)
-            total_members += member_count
-            guilds_payload.append(
-                {
-                    "id": int(guild.id),
-                    "name": guild.name,
-                    "description": str(getattr(guild, "description", "") or ""),
-                    "member_count": member_count,
-                    "icon_url": str(guild.icon.url) if guild.icon else "",
-                    "bot_integration_status": "Connected",
-                }
+            guild_id = int(guild.id)
+            cached_doc = {}
+            if public_guilds_col is not None:
+                try:
+                    cached_doc = public_guilds_col.find_one({"guild_id": guild_id}, {"_id": 0}) or {}
+                except Exception:
+                    cached_doc = {}
+
+            members = list(getattr(guild, "members", []) or [])
+            bots = sum(1 for m in members if getattr(m, "bot", False))
+            current_online = sum(
+                1
+                for m in members
+                if str(getattr(m, "status", "offline")) not in {"offline", "invisible"}
             )
+            member_plus_bots_count = _safe_int(guild.member_count, len(members))
+            if member_plus_bots_count <= 0:
+                member_plus_bots_count = max(0, len(members))
+            total_members_human = max(0, member_plus_bots_count - bots)
+
+            vanity_code = str(getattr(guild, "vanity_url_code", "") or "").strip()
+            invite_url = (
+                f"https://discord.gg/{vanity_code}"
+                if vanity_code
+                else str(cached_doc.get("invite_url") or DEFAULT_BOT_INVITE_URL)
+            )
+
+            top_count = 3
+            if settings_col is not None:
+                try:
+                    row = settings_col.find_one({"guild_id": guild_id}, {"_id": 0, "top_count": 1}) or {}
+                    top_count = max(1, _safe_int(row.get("top_count"), 3))
+                except Exception:
+                    top_count = 3
+            top_users = _live_top_users_for_guild(guild, top_count)
+
+            payload = {
+                "id": guild_id,
+                "name": str(guild.name or cached_doc.get("name") or f"{FALLBACK_GUILD_LABEL} {guild_id}"),
+                "description": str(getattr(guild, "description", "") or cached_doc.get("description") or ""),
+                "member_count": member_plus_bots_count,
+                "total_members": total_members_human,
+                "bots": max(0, bots),
+                "member_plus_bots_count": member_plus_bots_count,
+                "current_online": max(0, current_online),
+                "icon_url": str(guild.icon.url) if guild.icon else str(cached_doc.get("icon_url") or ""),
+                "photo": str(guild.icon.url) if guild.icon else str(cached_doc.get("photo") or ""),
+                "invite_url": invite_url,
+                "top_count": top_count,
+                "top_users": top_users,
+                "bot_integration_status": "Connected",
+            }
+            total_members += member_plus_bots_count
+            guilds_payload.append(payload)
+            if public_guilds_col is not None:
+                try:
+                    public_guilds_col.update_one(
+                        {"guild_id": guild_id},
+                        {
+                            "$set": {
+                                "guild_id": guild_id,
+                                "name": payload["name"],
+                                "description": payload["description"],
+                                "icon_url": payload["icon_url"],
+                                "photo": payload["photo"],
+                                "invite_url": payload["invite_url"],
+                                "current_online": payload["current_online"],
+                                "bots": payload["bots"],
+                                "total_members": payload["total_members"],
+                                "member_plus_bots_count": payload["member_plus_bots_count"],
+                                "member_count": payload["member_count"],
+                                "top_count": payload["top_count"],
+                                "top_users": payload["top_users"],
+                                "bot_integration_status": payload["bot_integration_status"],
+                                "updated_at": datetime.utcnow(),
+                            }
+                        },
+                        upsert=True,
+                    )
+                except Exception as exc:
+                    app.logger.warning("PublicGuildDiscovery upsert failed for %s: %s", guild_id, exc)
         guilds_payload.sort(key=lambda x: x["name"].lower())
     except Exception:
         guilds_payload = []
@@ -780,19 +951,24 @@ _HOME_HTML = """
 
     function cardTemplate(server) {
       const icon = server.icon_url || "https://cdn.discordapp.com/embed/avatars/0.png";
+      const invite = server.invite_url || INVITE_URL;
+      const online = Number(server.current_online || 0);
+      const bots = Number(server.bots || 0);
+      const humans = Number(server.total_members || 0);
+      const total = Number(server.member_plus_bots_count || server.member_count || 0);
       return `
         <article class="rounded-lg border border-slate-800 bg-[#0f1115] p-4">
           <div class="flex items-start gap-3">
             <img src="${icon}" alt="${server.name}" class="w-12 h-12 rounded-lg object-cover">
             <div class="min-w-0 flex-1">
               <h3 class="font-semibold truncate">${server.name}</h3>
-              <p class="text-sm text-slate-400 mt-1">${fmtNumber(server.member_count)} members</p>
+              <p class="text-sm text-slate-400 mt-1">${fmtNumber(total)} total • ${fmtNumber(humans)} members • ${fmtNumber(bots)} bots • ${fmtNumber(online)} online</p>
               <p class="text-xs text-indigo-300 mt-1 truncate">Status: ${server.bot_integration_status}</p>
             </div>
           </div>
           <div class="mt-4 flex gap-2">
             <button onclick="openDetail(${server.id})" class="px-3 py-2 rounded bg-slate-800 hover:bg-slate-700 text-sm">View Details</button>
-            <a href="${INVITE_URL}" class="px-3 py-2 rounded bg-indigo-600 hover:bg-indigo-500 text-sm">Invite Bot</a>
+            <a href="${invite}" target="_blank" rel="noopener noreferrer" class="px-3 py-2 rounded bg-indigo-600 hover:bg-indigo-500 text-sm">Invite Bot</a>
           </div>
         </article>`;
     }
@@ -828,6 +1004,10 @@ _HOME_HTML = """
       const data = await res.json();
       if (!res.ok) { pane.innerHTML = `<p class="text-red-400">${data.error || "Failed to fetch details."}</p>`; return; }
       const g = data.guild;
+      const topUsers = Array.isArray(g.top_users) ? g.top_users : [];
+      const topUsersHtml = topUsers.length
+        ? `<ol class="list-decimal list-inside space-y-1">${topUsers.map((u) => `<li>${u.display_name} — ${fmtNumber(u.message_count)} messages</li>`).join("")}</ol>`
+        : `<p class="text-slate-400">No activity tracked yet.</p>`;
       pane.innerHTML = `
         <h3 class="text-xl font-semibold mb-2">Server Detail</h3>
         <div class="grid md:grid-cols-[80px,1fr] gap-4 items-start">
@@ -836,10 +1016,19 @@ _HOME_HTML = """
             <p class="text-lg font-bold">${g.name}</p>
             <p class="text-slate-400 mt-1">${g.description || "No public description available."}</p>
             <ul class="mt-3 text-sm text-slate-300 space-y-1">
-              <li><strong>Member Count:</strong> ${fmtNumber(g.member_count)}</li>
+              <li><strong>Members (humans):</strong> ${fmtNumber(g.total_members)}</li>
+              <li><strong>Bots:</strong> ${fmtNumber(g.bots)}</li>
+              <li><strong>Total (members + bots):</strong> ${fmtNumber(g.member_plus_bots_count || g.member_count)}</li>
+              <li><strong>Online now:</strong> ${fmtNumber(g.current_online)}</li>
               <li><strong>Integration Status:</strong> ${g.bot_integration_status}</li>
+              <li><strong>Top Count (configured):</strong> ${fmtNumber(g.top_count || 3)}</li>
+              <li><strong>Invite Link:</strong> <a class="underline hover:text-white" href="${g.invite_url || INVITE_URL}" target="_blank" rel="noopener noreferrer">${g.invite_url || INVITE_URL}</a></li>
               <li><strong>Guild ID:</strong> ${g.id}</li>
             </ul>
+            <div class="mt-3">
+              <p class="font-semibold">Top Users (current cycle)</p>
+              ${topUsersHtml}
+            </div>
           </div>
         </div>`;
       history.replaceState({}, "", `/server/${guildId}`);
