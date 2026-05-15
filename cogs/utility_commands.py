@@ -579,7 +579,7 @@ class ServerInfoView(discord.ui.View):
         self._sync_role_buttons()
         await interaction.response.edit_message(view=self)
 
-    @discord.ui.button(label="Role List", style=discord.ButtonStyle.primary, custom_id="server_role_list")
+    @discord.ui.button(label="Role List", style=discord.ButtonStyle.primary, custom_id="server_role_list", row=2)
     async def role_list(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
         if not interaction.guild or interaction.guild.id != self.guild_id:
             await interaction.response.send_message("❌ This interaction is no longer valid.", ephemeral=True)
