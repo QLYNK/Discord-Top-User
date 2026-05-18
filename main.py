@@ -362,7 +362,7 @@ async def process_leaderboard(guild: discord.Guild, settings: dict):
 
     # 6. Final Message bhejna
     role_mention = role.mention if role else "Top Members"
-    content = f"{role_mention} Here are the top {top_count} most active members for this period!\n\n@everyone"
+    content = f"{role_mention} Here are the top {top_count} most active members for this period!"
     
     await announcement_channel.send(content=content, embed=embed, view=view)
 
