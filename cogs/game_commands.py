@@ -1158,6 +1158,7 @@ class GameCommands(commands.Cog):
         channel: discord.TextChannel,
         role: Optional[discord.Role],
         interval_mins: int,
+        ping_enabled: bool = True,
     ):
         game_name, prompt_text, expected_answer = await self._build_autogame_payload(channel)
         deadline_ts = _relative_ts(60)
@@ -1172,7 +1173,16 @@ class GameCommands(commands.Cog):
         )
         embed.set_footer(text="an app by deep")
         ping_content = role.mention if role else None
-        game_message = await channel.send(content=ping_content, embed=embed, view=_branding_view())
+        
+        # Ping check logic
+        allowed_mentions = discord.AllowedMentions(roles=ping_enabled, users=True, everyone=False)
+        
+        game_message = await channel.send(
+            content=ping_content, 
+            embed=embed, 
+            view=_branding_view(),
+            allowed_mentions=allowed_mentions
+        )
 
         updates: list[dict] = []
         player_changes: list[tuple[str, int, str]] = []
@@ -1286,6 +1296,8 @@ class GameCommands(commands.Cog):
             channel_id = settings.get("autogame_channel_id")
             role_id = settings.get("autogame_role_id")  # may be None (silent drop)
             interval_mins = int(settings.get("autogame_interval_minutes") or 0)
+            ping_enabled = settings.get("ping_autogame_role", True) # <-- DB se fetch kiya
+            
             if not guild_id or not channel_id or interval_mins <= 0:
                 continue
 
@@ -1305,7 +1317,14 @@ class GameCommands(commands.Cog):
                 self._autogame_next_run[guild_id] = now + (interval_mins * 60)
                 continue
             role = guild.get_role(role_id) if role_id else None
-            await self._run_scheduled_autogame(guild=guild, channel=channel, role=role, interval_mins=interval_mins)
+            
+            await self._run_scheduled_autogame(
+                guild=guild, 
+                channel=channel, 
+                role=role, 
+                interval_mins=interval_mins,
+                ping_enabled=ping_enabled # <-- Pass kiya
+            )
             self._autogame_next_run[guild_id] = now + (interval_mins * 60)
 
     @_autogame_scheduler.before_loop
@@ -1415,6 +1434,8 @@ class GameCommands(commands.Cog):
         channel_id = settings.get("autogame_channel_id")
         role_id = settings.get("autogame_role_id")
         interval_mins = int(settings.get("autogame_interval_minutes") or 60)
+        ping_enabled = settings.get("ping_autogame_role", True) # <-- DB se fetch kiya
+        
         if not channel_id:
             await interaction.followup.send("❌ No auto-game channel configured. Use `/setup autogame` first.", ephemeral=True)
             return
@@ -1429,6 +1450,7 @@ class GameCommands(commands.Cog):
             channel=channel,
             role=role,
             interval_mins=interval_mins,
+            ping_enabled=ping_enabled, # <-- Pass kiya
         )
         self._autogame_next_run[interaction.guild_id] = time.time() + (interval_mins * 60)
 
