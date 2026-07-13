@@ -163,8 +163,19 @@ class SetupCommands(commands.Cog):
         embed.set_footer(text="an app by deep")
 
         role_mention = role.mention if role else "Top Members"
-        content = f"{role_mention} Existing cycle result ({reason}) — Top {top_count} members."
-        await announcement_channel.send(content=content, embed=embed, view=self._branding_view())
+        custom_msg = settings.get("custom_announcement")
+        
+        # Custom message logic
+        if custom_msg:
+            content = custom_msg.replace("{role}", role_mention).replace("{reason}", reason).replace("{top_count}", str(top_count))
+        else:
+            content = f"{role_mention} Existing cycle result ({reason}) — Top {top_count} members."
+
+        # Ping toggle logic (Default True)
+        ping_enabled = settings.get("ping_reward_role", True)
+        allowed_mentions = discord.AllowedMentions(roles=ping_enabled, users=True)
+
+        await announcement_channel.send(content=content, embed=embed, view=self._branding_view(), allowed_mentions=allowed_mentions)
 
     # Create the /setup slash command group
     setup_group = app_commands.Group(name="setup", description="Leaderboard bot setup and configurations", default_permissions=discord.Permissions(administrator=True))
@@ -191,22 +202,81 @@ class SetupCommands(commands.Cog):
 
     @setup_group.command(name="channel", description="Set the channel for weekly leaderboard announcements")
     async def setup_channel(self, interaction: discord.Interaction, channel: discord.TextChannel):
+        await interaction.response.defer(thinking=True)
         await db.update_guild_settings(interaction.guild_id, {"announcement_channel_id": channel.id})
-        await interaction.response.send_message(f"✅ Announcement channel set to {channel.mention}")
+        await interaction.followup.send(f"✅ Announcement channel set to {channel.mention}")
 
     @setup_group.command(name="logs", description="Set the channel for HTML and JSON data logs")
     async def setup_logs(self, interaction: discord.Interaction, channel: discord.TextChannel):
+        await interaction.response.defer(thinking=True)
         await db.update_guild_settings(interaction.guild_id, {"logs_channel_id": channel.id})
-        await interaction.response.send_message(f"✅ Logs channel set to {channel.mention}")
+        await interaction.followup.send(f"✅ Logs channel set to {channel.mention}")
 
     @setup_group.command(name="game_logs", description="Set the local channel for server game result summaries")
     async def setup_game_logs(self, interaction: discord.Interaction, channel: discord.TextChannel):
+        await interaction.response.defer(thinking=True)
         await db.update_guild_settings(interaction.guild_id, {"game_logs_channel_id": channel.id})
-        await interaction.response.send_message(
+        await interaction.followup.send(
             f"✅ Local game logs channel set to {channel.mention}.\n"
             "Game summaries will now be posted here in addition to centralized telemetry.",
             view=self._branding_view(),
         )
+
+    # --- NAYE COMMANDS YAHAN HAIN ---
+    
+    @setup_group.command(name="toggle_ping", description="Turn On/Off the notification ping for the reward role")
+    async def setup_toggle_ping(self, interaction: discord.Interaction, enable: bool):
+        await interaction.response.defer(thinking=True)
+        await db.update_guild_settings(interaction.guild_id, {"ping_reward_role": enable})
+        status = "ON (Role will be pinged)" if enable else "OFF (Silent mention without pinging)"
+        await interaction.followup.send(f"✅ Reward role ping is now **{status}**.")
+
+    @setup_group.command(name="message_edit", description="Set a custom text for the leaderboard announcement message")
+    async def setup_message_edit(self, interaction: discord.Interaction, custom_message: str):
+        await interaction.response.defer(thinking=True)
+        await db.update_guild_settings(interaction.guild_id, {"custom_announcement": custom_message})
+        await interaction.followup.send(
+            f"✅ Custom announcement message updated to:\n`{custom_message}`\n\n"
+            "*(Tip: Use `{role}` in your message where you want the bot to mention the reward role)*"
+        )
+
+    @setup_group.command(name="message_reset", description="Reset the announcement message back to default")
+    async def setup_message_reset(self, interaction: discord.Interaction):
+        await interaction.response.defer(thinking=True)
+        await db.update_guild_settings(interaction.guild_id, {"custom_announcement": None})
+        await interaction.followup.send("✅ Announcement message has been reset to default.")
+
+    # --------------------------------
+
+    @setup_group.command(name="role", description="Set the reward role and test it with buttons")
+    async def setup_role(self, interaction: discord.Interaction, role: discord.Role):
+        await interaction.response.defer(thinking=True)
+        await db.update_guild_settings(interaction.guild_id, {"reward_role_id": role.id})
+        view = RoleSetupView(role)
+        await interaction.followup.send(
+            f"✅ Reward role set to {role.mention}.\nNiche diye gaye buttons se members khud role add/remove test kar sakte hain:", 
+            view=view
+        )
+
+    @setup_group.command(name="days", description="Set custom interval for the leaderboard (Default: 7)")
+    async def setup_days(self, interaction: discord.Interaction, days: app_commands.Range[int, 1, 365]):
+        await interaction.response.defer(thinking=True)
+        settings = await db.get_guild_settings(interaction.guild_id)
+        await self.send_backup_logs(interaction.guild, settings, f"Interval days changed to {days}")
+        await db.update_guild_settings(interaction.guild_id, {"interval_days": days})
+        updated_settings = {**settings, "interval_days": int(days)}
+        next_result_time = self._next_result_time(updated_settings, datetime.now(timezone.utc))
+        await interaction.followup.send(
+            "✅ Leaderboard timer updated.\n"
+            f"Interval: **{days} day(s)**\n"
+            f"Next result: {self._format_discord_time(next_result_time)}"
+        )
+
+    @setup_group.command(name="top_count", description="Set how many top members get the role (Default: 3)")
+    async def setup_top_count(self, interaction: discord.Interaction, count: app_commands.Range[int, 1, 25]):
+        await interaction.response.defer(thinking=True)
+        await db.update_guild_settings(interaction.guild_id, {"top_count": count})
+        await interaction.followup.send(f"✅ Leaderboard will now reward Top **{count}** active members.")
 
     @setup_group.command(name="autogame", description="Configure automated game drops")
     @app_commands.describe(
@@ -431,7 +501,8 @@ class SetupCommands(commands.Cog):
         embed.add_field(name="`/setup logs`", value="Backup (JSON & HTML) kaha bhejna hai wo set karo.", inline=False)
         embed.add_field(name="`/setup game_logs`", value="Har game result ka local server summary channel set karo.", inline=False)
         embed.add_field(name="`/setup autogame`", value="Auto-game channel + ping role + interval configure karo.", inline=False)
-        embed.add_field(name="`/setup role`", value="Reward role assign karo with Test Buttons.", inline=False)
+        embed.add_field(name="`/setup role` & `/setup toggle_ping`", value="Reward role assign karo aur uska ping ON/OFF karo.", inline=False)
+        embed.add_field(name="`/setup message_edit` & `/setup message_reset`", value="Leaderboard ka custom message set ya reset karo.", inline=False)
         embed.add_field(name="`/setup days` & `/setup top_count`", value="Timer (days) aur kitne logo ko role dena hai (Top N) configure karo.", inline=False)
         embed.add_field(name="`/setup schedule`", value="Start date + 24h UTC time set karo (today se next 7 days options).", inline=False)
         embed.add_field(name="`/setup reset` & `/setup hard_reset`", value="Current messages reset karne ya pura data udane ke liye.", inline=False)
