@@ -165,23 +165,19 @@ class SetupCommands(commands.Cog):
         role_mention = role.mention if role else "Top Members"
         custom_msg = settings.get("custom_announcement")
         
-        # Custom message logic
         if custom_msg:
             content = custom_msg.replace("{role}", role_mention).replace("{reason}", reason).replace("{top_count}", str(top_count))
         else:
             content = f"{role_mention} Existing cycle result ({reason}) — Top {top_count} members."
 
-        # Ping toggle logic (Default True)
         ping_enabled = settings.get("ping_reward_role", True)
-        allowed_mentions = discord.AllowedMentions(roles=ping_enabled, users=True)
+        allowed_mentions = discord.AllowedMentions(roles=ping_enabled, users=True, everyone=False)
 
         await announcement_channel.send(content=content, embed=embed, view=self._branding_view(), allowed_mentions=allowed_mentions)
 
-    # Create the /setup slash command group
     setup_group = app_commands.Group(name="setup", description="Leaderboard bot setup and configurations", default_permissions=discord.Permissions(administrator=True))
 
     async def send_backup_logs(self, guild: discord.Guild, settings: dict, action: str):
-        """Action hone se pehle Logs channel me JSON aur HTML format me data backup bhejta hai."""
         logs_channel_id = settings.get("logs_channel_id")
         if not logs_channel_id: return
         
@@ -193,7 +189,6 @@ class SetupCommands(commands.Cog):
             await logs_channel.send(f"⚠️ **Log Action: {action}**\nKoi data nahi mila is cycle ke liye.")
             return
 
-        # Generate files using utils.py
         json_file = utils.generate_json_file(users_data)
         guild_icon = guild.icon.url if guild.icon else ""
         html_file = utils.generate_html_file(users_data, guild.name, guild_icon)
@@ -222,8 +217,6 @@ class SetupCommands(commands.Cog):
             view=self._branding_view(),
         )
 
-    # --- NAYE COMMANDS YAHAN HAIN ---
-    
     @setup_group.command(name="toggle_ping", description="Turn On/Off the notification ping for the reward role")
     async def setup_toggle_ping(self, interaction: discord.Interaction, enable: bool):
         await interaction.response.defer(thinking=True)
@@ -246,37 +239,12 @@ class SetupCommands(commands.Cog):
         await db.update_guild_settings(interaction.guild_id, {"custom_announcement": None})
         await interaction.followup.send("✅ Announcement message has been reset to default.")
 
-    # --------------------------------
-
-    @setup_group.command(name="role", description="Set the reward role and test it with buttons")
-    async def setup_role(self, interaction: discord.Interaction, role: discord.Role):
+    @setup_group.command(name="autogame_toggle_ping", description="Turn On/Off the notification ping for the auto-game role")
+    async def setup_autogame_toggle_ping(self, interaction: discord.Interaction, enable: bool):
         await interaction.response.defer(thinking=True)
-        await db.update_guild_settings(interaction.guild_id, {"reward_role_id": role.id})
-        view = RoleSetupView(role)
-        await interaction.followup.send(
-            f"✅ Reward role set to {role.mention}.\nNiche diye gaye buttons se members khud role add/remove test kar sakte hain:", 
-            view=view
-        )
-
-    @setup_group.command(name="days", description="Set custom interval for the leaderboard (Default: 7)")
-    async def setup_days(self, interaction: discord.Interaction, days: app_commands.Range[int, 1, 365]):
-        await interaction.response.defer(thinking=True)
-        settings = await db.get_guild_settings(interaction.guild_id)
-        await self.send_backup_logs(interaction.guild, settings, f"Interval days changed to {days}")
-        await db.update_guild_settings(interaction.guild_id, {"interval_days": days})
-        updated_settings = {**settings, "interval_days": int(days)}
-        next_result_time = self._next_result_time(updated_settings, datetime.now(timezone.utc))
-        await interaction.followup.send(
-            "✅ Leaderboard timer updated.\n"
-            f"Interval: **{days} day(s)**\n"
-            f"Next result: {self._format_discord_time(next_result_time)}"
-        )
-
-    @setup_group.command(name="top_count", description="Set how many top members get the role (Default: 3)")
-    async def setup_top_count(self, interaction: discord.Interaction, count: app_commands.Range[int, 1, 25]):
-        await interaction.response.defer(thinking=True)
-        await db.update_guild_settings(interaction.guild_id, {"top_count": count})
-        await interaction.followup.send(f"✅ Leaderboard will now reward Top **{count}** active members.")
+        await db.update_guild_settings(interaction.guild_id, {"ping_autogame_role": enable})
+        status = "ON (Role will be pinged)" if enable else "OFF (Silent mention without pinging)"
+        await interaction.followup.send(f"✅ Auto-game role ping is now **{status}**.")
 
     @setup_group.command(name="autogame", description="Configure automated game drops")
     @app_commands.describe(
@@ -313,16 +281,17 @@ class SetupCommands(commands.Cog):
 
     @setup_group.command(name="role", description="Set the reward role and test it with buttons")
     async def setup_role(self, interaction: discord.Interaction, role: discord.Role):
+        await interaction.response.defer(thinking=True)
         await db.update_guild_settings(interaction.guild_id, {"reward_role_id": role.id})
         view = RoleSetupView(role)
-        await interaction.response.send_message(
+        await interaction.followup.send(
             f"✅ Reward role set to {role.mention}.\nNiche diye gaye buttons se members khud role add/remove test kar sakte hain:", 
             view=view
         )
 
     @setup_group.command(name="days", description="Set custom interval for the leaderboard (Default: 7)")
     async def setup_days(self, interaction: discord.Interaction, days: app_commands.Range[int, 1, 365]):
-        await interaction.response.defer()
+        await interaction.response.defer(thinking=True)
         settings = await db.get_guild_settings(interaction.guild_id)
         await self.send_backup_logs(interaction.guild, settings, f"Interval days changed to {days}")
         await db.update_guild_settings(interaction.guild_id, {"interval_days": days})
@@ -336,8 +305,9 @@ class SetupCommands(commands.Cog):
 
     @setup_group.command(name="top_count", description="Set how many top members get the role (Default: 3)")
     async def setup_top_count(self, interaction: discord.Interaction, count: app_commands.Range[int, 1, 25]):
+        await interaction.response.defer(thinking=True)
         await db.update_guild_settings(interaction.guild_id, {"top_count": count})
-        await interaction.response.send_message(f"✅ Leaderboard will now reward Top **{count}** active members.")
+        await interaction.followup.send(f"✅ Leaderboard will now reward Top **{count}** active members.")
 
     @setup_group.command(name="schedule", description="Set counting start date + result time (UTC)")
     @app_commands.describe(
@@ -427,6 +397,7 @@ class SetupCommands(commands.Cog):
 
     @setup_group.command(name="check", description="Show current leaderboard cycle overview and configuration")
     async def setup_check(self, interaction: discord.Interaction):
+        await interaction.response.defer(thinking=True)
         settings = await db.get_guild_settings(interaction.guild_id)
         top_count = max(1, int(settings.get("top_count", 3) or 3))
         top_users = await db.get_top_users(interaction.guild_id, top_count)
@@ -470,11 +441,11 @@ class SetupCommands(commands.Cog):
         embed.add_field(name="Upcoming Result", value=self._format_discord_time(next_result_time), inline=False)
         embed.add_field(name="Remaining Until Next Result", value=self._format_remaining(now, next_result_time), inline=False)
         embed.set_footer(text="an app by deep")
-        await interaction.response.send_message(embed=embed, view=BackupLogsView(self))
+        await interaction.followup.send(embed=embed, view=BackupLogsView(self))
 
     @setup_group.command(name="reset", description="Soft Reset: Send logs and delete current cycle data")
     async def setup_reset(self, interaction: discord.Interaction):
-        await interaction.response.defer()
+        await interaction.response.defer(thinking=True)
         settings = await db.get_guild_settings(interaction.guild_id)
         await self.send_backup_logs(interaction.guild, settings, "Manual Soft Reset triggered")
         await db.reset_activity(interaction.guild_id)
@@ -482,7 +453,7 @@ class SetupCommands(commands.Cog):
 
     @setup_group.command(name="hard_reset", description="Hard Reset: Send logs and wipe entire server settings + data")
     async def setup_hard_reset(self, interaction: discord.Interaction):
-        await interaction.response.defer()
+        await interaction.response.defer(thinking=True)
         settings = await db.get_guild_settings(interaction.guild_id)
         await self.send_backup_logs(interaction.guild, settings, "Manual HARD Reset triggered")
         await db.hard_reset_guild(interaction.guild_id)
@@ -500,12 +471,13 @@ class SetupCommands(commands.Cog):
         embed.add_field(name="`/setup channel`", value="Leaderboard list kahan bhejni hai wo set karo.", inline=False)
         embed.add_field(name="`/setup logs`", value="Backup (JSON & HTML) kaha bhejna hai wo set karo.", inline=False)
         embed.add_field(name="`/setup game_logs`", value="Har game result ka local server summary channel set karo.", inline=False)
-        embed.add_field(name="`/setup autogame`", value="Auto-game channel + ping role + interval configure karo.", inline=False)
+        embed.add_field(name="`/setup autogame` & `/setup autogame_toggle_ping`", value="Auto-game channel configure karo aur uska ping ON/OFF karo.", inline=False)
         embed.add_field(name="`/setup role` & `/setup toggle_ping`", value="Reward role assign karo aur uska ping ON/OFF karo.", inline=False)
         embed.add_field(name="`/setup message_edit` & `/setup message_reset`", value="Leaderboard ka custom message set ya reset karo.", inline=False)
         embed.add_field(name="`/setup days` & `/setup top_count`", value="Timer (days) aur kitne logo ko role dena hai (Top N) configure karo.", inline=False)
         embed.add_field(name="`/setup schedule`", value="Start date + 24h UTC time set karo (today se next 7 days options).", inline=False)
         embed.add_field(name="`/setup reset` & `/setup hard_reset`", value="Current messages reset karne ya pura data udane ke liye.", inline=False)
+        embed.add_field(name="`/setup check`", value="Sab settings aur timer ka current status check karo.", inline=False)
         embed.add_field(name="`/setup ping` & `/setup restart`", value="Uptime check karne aur bot restart karne ke liye.", inline=False)
         
         embed.set_footer(text="an app by deep", icon_url=interaction.user.avatar.url if interaction.user.avatar else None)
