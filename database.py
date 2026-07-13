@@ -1,6 +1,7 @@
 import os
 from motor.motor_asyncio import AsyncIOMotorClient
 from pymongo import DeleteOne, UpdateOne
+import certifi  # <-- Naya import
 
 # Environment variable se MongoDB URI lena
 MONGO_URI = os.getenv("MONGO_URI")
