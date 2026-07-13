@@ -1296,7 +1296,7 @@ class GameCommands(commands.Cog):
             channel_id = settings.get("autogame_channel_id")
             role_id = settings.get("autogame_role_id")  # may be None (silent drop)
             interval_mins = int(settings.get("autogame_interval_minutes") or 0)
-            ping_enabled = settings.get("ping_autogame_role", True) # <-- DB se fetch kiya
+            ping_enabled = settings.get("ping_autogame_role", True)
             
             if not guild_id or not channel_id or interval_mins <= 0:
                 continue
@@ -1323,7 +1323,7 @@ class GameCommands(commands.Cog):
                 channel=channel, 
                 role=role, 
                 interval_mins=interval_mins,
-                ping_enabled=ping_enabled # <-- Pass kiya
+                ping_enabled=ping_enabled
             )
             self._autogame_next_run[guild_id] = now + (interval_mins * 60)
 
@@ -1434,7 +1434,7 @@ class GameCommands(commands.Cog):
         channel_id = settings.get("autogame_channel_id")
         role_id = settings.get("autogame_role_id")
         interval_mins = int(settings.get("autogame_interval_minutes") or 60)
-        ping_enabled = settings.get("ping_autogame_role", True) # <-- DB se fetch kiya
+        ping_enabled = settings.get("ping_autogame_role", True)
         
         if not channel_id:
             await interaction.followup.send("❌ No auto-game channel configured. Use `/setup autogame` first.", ephemeral=True)
@@ -1444,13 +1444,15 @@ class GameCommands(commands.Cog):
             await interaction.followup.send("❌ Configured channel not found or is not a text channel.", ephemeral=True)
             return
         role = interaction.guild.get_role(role_id) if role_id else None
+        
         await interaction.followup.send("⚡ Forcing auto-game drop now…", ephemeral=True)
+        
         await self._run_scheduled_autogame(
             guild=interaction.guild,
             channel=channel,
             role=role,
             interval_mins=interval_mins,
-            ping_enabled=ping_enabled, # <-- Pass kiya
+            ping_enabled=ping_enabled,
         )
         self._autogame_next_run[interaction.guild_id] = time.time() + (interval_mins * 60)
 
