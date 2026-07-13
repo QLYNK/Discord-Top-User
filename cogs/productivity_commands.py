@@ -398,6 +398,8 @@ class ProductivityCommands(commands.Cog):
         focused = int(session.get("focused_seconds_accum", 0))
         last_resumed_at = session.get("last_resumed_at")
         if session.get("status") == "running" and isinstance(last_resumed_at, datetime):
+            if last_resumed_at.tzinfo is None:
+                last_resumed_at = last_resumed_at.replace(tzinfo=timezone.utc)
             elapsed = max(0, int((now - last_resumed_at).total_seconds()))
             remaining = max(0, remaining - elapsed)
             focused += elapsed
@@ -453,7 +455,12 @@ class ProductivityCommands(commands.Cog):
         missed = afk_doc.get("missed", [])
         await afks_col.delete_one({"user_id": user.id})
 
-        duration = _format_hms(int((_utc_now() - started).total_seconds())) if isinstance(started, datetime) else "Unknown"
+        if isinstance(started, datetime):
+            if started.tzinfo is None:
+                started = started.replace(tzinfo=timezone.utc)
+            duration = _format_hms(int((_utc_now() - started).total_seconds()))
+        else:
+            duration = "Unknown"
         embed = await self._build_missed_embed("Missed Mentions While AFK", missed)
 
         mode_label = "Hard AFK" if afk_doc.get("strictness") == "hard" else "Soft AFK"
@@ -512,7 +519,10 @@ class ProductivityCommands(commands.Cog):
 
         focused_seconds = int(session.get("focused_seconds_accum", 0))
         if session.get("status") == "running" and session.get("last_resumed_at"):
-            focused_seconds += int((_utc_now() - session["last_resumed_at"]).total_seconds())
+            last_resumed = session["last_resumed_at"]
+            if isinstance(last_resumed, datetime) and last_resumed.tzinfo is None:
+                last_resumed = last_resumed.replace(tzinfo=timezone.utc)
+            focused_seconds += int((_utc_now() - last_resumed).total_seconds())
 
         focused_minutes = focused_seconds / 60
         profile = await self._get_or_create_profile(user_id)
@@ -788,7 +798,11 @@ class ProductivityCommands(commands.Cog):
             return
 
         now = _utc_now()
-        elapsed = int((now - session.get("last_resumed_at", now)).total_seconds())
+        last_resumed = session.get("last_resumed_at") or now
+        if isinstance(last_resumed, datetime) and last_resumed.tzinfo is None:
+            last_resumed = last_resumed.replace(tzinfo=timezone.utc)
+            
+        elapsed = int((now - last_resumed).total_seconds())
         remaining = max(0, int(session.get("remaining_seconds", 0)) - elapsed)
         focused = int(session.get("focused_seconds_accum", 0)) + max(0, elapsed)
 
