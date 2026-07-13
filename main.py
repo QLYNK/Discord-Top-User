@@ -33,8 +33,16 @@ async def _dynamic_prefix(bot_instance: commands.Bot, message: discord.Message):
     prefixes = await db.get_effective_prefixes(user_id=user_id, guild_id=guild_id)
     return commands.when_mentioned_or(*prefixes)(bot_instance, message)
 
+# 1. Default mentions rule set kar diya: Everyone/Here BLOCK, Users ALLOWED, Roles BLOCK (default)
+default_mentions = discord.AllowedMentions(everyone=False, users=True, roles=False)
 
-bot = commands.Bot(command_prefix=_dynamic_prefix, intents=intents, help_command=None)
+# 2. 'allowed_mentions' ko bot me pass kar diya (Main Brain Fix)
+bot = commands.Bot(
+    command_prefix=_dynamic_prefix, 
+    intents=intents, 
+    help_command=None,
+    allowed_mentions=default_mentions
+)
 install_global_branding_enforcer()
 keep_alive.register_bot(bot)
 
@@ -362,9 +370,23 @@ async def process_leaderboard(guild: discord.Guild, settings: dict):
 
     # 6. Final Message bhejna
     role_mention = role.mention if role else "Top Members"
-    content = f"{role_mention} Here are the top {top_count} most active members for this period!"
     
-    await announcement_channel.send(content=content, embed=embed, view=view)
+    # Custom message fetch karna (Jo tumne /setup message_edit me set kiya tha)
+    custom_msg = settings.get("custom_announcement")
+    if custom_msg:
+        # {role} aur {top_count} ko replace karna
+        content = custom_msg.replace("{role}", role_mention).replace("{top_count}", str(top_count))
+    else:
+        content = f"{role_mention} Here are the top {top_count} most active members for this period!"
+    
+    # Ping Toggle check karna
+    ping_enabled = settings.get("ping_reward_role", True)
+    
+    # Is specific message ke liye temporary permissions overide karna
+    allowed_mentions = discord.AllowedMentions(roles=ping_enabled, users=True, everyone=False)
+    
+    # allowed_mentions pass karna zaroori hai
+    await announcement_channel.send(content=content, embed=embed, view=view, allowed_mentions=allowed_mentions)
 
     # 7. Data Wipe for the new cycle
     await db.reset_activity(guild.id)
