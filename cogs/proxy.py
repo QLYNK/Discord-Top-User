@@ -35,7 +35,7 @@ class ProxyProfile:
         return [re.compile(rf"\b{re.escape(alias)}\b", re.IGNORECASE) for alias in self.aliases if alias]
 
 
-class _StatusModal(discord.ui.Modal, title="Set Break Status"):
+class _OwnerStatusModal(discord.ui.Modal, title="Owner Break Status"):
     current_status = discord.ui.TextInput(
         label="Current Status",
         placeholder="On a hardcore offline study grind.",
@@ -119,6 +119,74 @@ class _StatusModal(discord.ui.Modal, title="Set Break Status"):
             )
 
 
+class _PublicStatusModal(discord.ui.Modal, title="Set Digital Proxy Status"):
+    reason = discord.ui.TextInput(
+        label="Reason",
+        placeholder="Studying / Sleeping / Working",
+        required=True,
+        max_length=100,
+    )
+    current_status = discord.ui.TextInput(
+        label="Message for Pings",
+        placeholder="Leave a message for anyone who pings me.",
+        style=discord.TextStyle.paragraph,
+        required=True,
+        max_length=400,
+    )
+    eta = discord.ui.TextInput(
+        label="ETA (Kab wapas aaoge?)",
+        placeholder="2 hours / Tomorrow morning",
+        required=True,
+        max_length=120,
+    )
+
+    def __init__(self, cog: "ProxyCommands"):
+        super().__init__()
+        self.cog = cog
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        payload = {
+            "user_id": interaction.user.id,
+            "guild_id": interaction.guild_id,
+            "status_text": f"[{self.reason.value.strip()}] {self.current_status.value.strip()}",
+            "eta_text": self.eta.value.strip(),
+            "aliases": [],  # Normal users ko alias support nahi
+            "missed_pings": [],
+            "updated_at": datetime.now(timezone.utc),
+        }
+        try:
+            await status_profiles_col.update_one({"user_id": interaction.user.id}, {"$set": payload}, upsert=True)
+            self.cog._status_cache[interaction.user.id] = ProxyProfile(
+                user_id=interaction.user.id,
+                status_text=payload["status_text"],
+                eta_text=payload["eta_text"],
+                aliases=[],
+                guild_id=interaction.guild_id,
+                missed_pings=[],
+            )
+            
+            # Bot invite link popup for better reach
+            invite_url = discord.utils.oauth_url(interaction.client.user.id, permissions=discord.Permissions(8))
+            
+            await interaction.response.send_message(
+                f"✅ Tumhara proxy status set ho gaya hai!\n\n💡 **Pro Tip:** Bot ko apne personal servers me add karo taaki yeh har jagah tumhare mentions ka reply kar sake. [Click Here to Invite Bot]({invite_url})",
+                ephemeral=True,
+                view=create_branding_view()
+            )
+            
+            await send_activity_log(
+                self.cog.bot,
+                activity_type="Public Proxy Activated",
+                details="A normal user activated digital proxy status.",
+                module="Proxy",
+                guild=interaction.guild,
+                user=interaction.user,
+            )
+        except Exception as exc:
+            await interaction.response.send_message("Failed to save the status profile. Please try again.", ephemeral=True)
+            await log_exception(self.cog.bot, title="Public Proxy Activation Failed", error=exc, context=f"User {interaction.user.id}")
+
+# YAHAN SE ADD KARNA HAI: Missing View Class aur Keep ON button
 class _ToggleStatusView(discord.ui.View):
     def __init__(self, cog: "ProxyCommands", owner_id: int):
         super().__init__(timeout=300)
@@ -150,6 +218,7 @@ class _ToggleStatusView(discord.ui.View):
             user=interaction.user,
         )
 
+    # TUMHARA CODE YAHAN SE CONTINUE HOGA...
     @discord.ui.button(label="Turn OFF", style=discord.ButtonStyle.danger)
     async def turn_off(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
         if not await self._guard(interaction):
@@ -227,7 +296,60 @@ class ProxyCommands(commands.Cog):
 
     @status_group.command(name="set", description="Set your digital break status")
     async def status_set(self, interaction: discord.Interaction) -> None:
-        await interaction.response.send_modal(_StatusModal(self))
+        is_owner = await self.bot.is_owner(interaction.user)
+        if is_owner:
+            await interaction.response.send_modal(_OwnerStatusModal(self))
+        else:
+            await interaction.response.send_modal(_PublicStatusModal(self))
+
+    @status_group.command(name="end", description="End your digital proxy status globally")
+    async def status_end(self, interaction: discord.Interaction) -> None:
+        profile = self._status_cache.pop(interaction.user.id, None)
+        self._owner_prompt_suppression.pop(interaction.user.id, None)
+        self._toggle_prompt_inflight.discard(interaction.user.id)
+
+        db_profile = await status_profiles_col.find_one_and_delete({"user_id": interaction.user.id})
+        
+        if not profile and not db_profile:
+            await interaction.response.send_message("❌ Tumhara koi active proxy status nahi hai.", ephemeral=True)
+            return
+
+        missed = list((db_profile or {}).get("missed_pings", []))
+        if profile:
+            missed = profile.missed_pings or missed
+
+        embed = discord.Embed(
+            title="Break Status Disabled",
+            description="Your digital proxy has been turned off globally.",
+            color=0x5865F2,
+            timestamp=datetime.now(timezone.utc),
+        )
+        if missed:
+            lines = []
+            for item in missed[:20]:
+                lines.append(
+                    f"• **{item.get('author_name', 'Unknown')}** — "
+                    f"[Jump]({item.get('jump_url', 'https://discord.com')})\n"
+                    f"{str(item.get('content', ''))[:160]}"
+                )
+            embed.add_field(name="Missed Pings", value="\n\n".join(lines)[:1024], inline=False)
+        else:
+            embed.add_field(name="Missed Pings", value="No missed pings were recorded.", inline=False)
+
+        await interaction.response.send_message("✅ Status is now OFF.", view=create_branding_view(), ephemeral=True)
+        try:
+            await interaction.user.send(embed=embed, view=create_branding_view())
+        except discord.Forbidden:
+            await interaction.followup.send("⚠️ Tumhara DMs closed hai isliye missed pings ki list DM nahi kar paaya.", ephemeral=True)
+            
+        await send_activity_log(
+            self.bot,
+            activity_type="Proxy Ended Manually",
+            details="User used /status end to disable proxy.",
+            module="Proxy",
+            guild=interaction.guild,
+            user=interaction.user,
+        )
 
     async def _append_missed_ping(self, owner_id: int, payload: dict) -> None:
         try:
