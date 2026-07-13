@@ -1315,8 +1315,9 @@ class GameCommands(commands.Cog):
     # ── /game group ──────────────────────────────────────────────────────────
 
     game_group = app_commands.Group(name="game", description="Games & fun commands")
-    add_group = app_commands.Group(name="add", description="Securely add game content", parent=game_group)
-    send_group = app_commands.Group(name="send", description="Send managed game messages", parent=game_group)
+    # 'parent=game_group' hata diya aur 'default_permissions' laga diya taaki normal games se separate rahe
+    add_group = app_commands.Group(name="add", description="Securely add game content", default_permissions=discord.Permissions(administrator=True))
+    send_group = app_commands.Group(name="send", description="Send managed game messages", default_permissions=discord.Permissions(administrator=True))
     autoreply_group = app_commands.Group(name="autoreply", description="Manage auto-replies")
     autogame_group = app_commands.Group(
         name="autogame",
