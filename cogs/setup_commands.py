@@ -62,10 +62,10 @@ class BackupLogsView(discord.ui.View):
 class SetupCommands(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        self.daily_activity_logs.start()
+        self.hourly_activity_logs.start()
 
     def cog_unload(self):
-        self.daily_activity_logs.cancel()
+        self.hourly_activity_logs.cancel()
 
     @staticmethod
     def _branding_view() -> discord.ui.View:
@@ -178,6 +178,7 @@ class SetupCommands(commands.Cog):
     setup_group = app_commands.Group(name="setup", description="Leaderboard bot setup and configurations", default_permissions=discord.Permissions(administrator=True))
 
     async def send_backup_logs(self, guild: discord.Guild, settings: dict, action: str):
+        """Action hone se pehle Logs channel me split embeds aur JSON/HTML format me data backup bhejta hai."""
         logs_channel_id = settings.get("logs_channel_id")
         if not logs_channel_id: return
         
@@ -185,15 +186,11 @@ class SetupCommands(commands.Cog):
         if not logs_channel: return
 
         users_data = await db.get_all_users(guild.id)
-        if not users_data:
-            await logs_channel.send(f"⚠️ **Log Action: {action}**\nKoi data nahi mila is cycle ke liye.")
-            return
+        last_reset = self._normalize_utc(settings.get("last_reset_time"))
+        time_range_str = f"From: {self._format_discord_time(last_reset)} to Now" if last_reset else "All time"
 
-        json_file = utils.generate_json_file(users_data)
-        guild_icon = guild.icon.url if guild.icon else ""
-        html_file = utils.generate_html_file(users_data, guild.name, guild_icon)
-
-        await logs_channel.send(f"📄 **Log Action: {action}**\nData backup done before changes:", files=[json_file, html_file])
+        # Ye seedha utils file ka naya function call karega
+        await utils.send_paginated_backup_logs(logs_channel, guild, users_data, time_range_str, action)
 
     @setup_group.command(name="channel", description="Set the channel for weekly leaderboard announcements")
     async def setup_channel(self, interaction: discord.Interaction, channel: discord.TextChannel):
@@ -483,8 +480,8 @@ class SetupCommands(commands.Cog):
         embed.set_footer(text="an app by deep", icon_url=interaction.user.avatar.url if interaction.user.avatar else None)
         await interaction.response.send_message(embed=embed, view=self._branding_view())
 
-    @tasks.loop(hours=24)
-    async def daily_activity_logs(self):
+    @tasks.loop(hours=1)
+    async def hourly_activity_logs(self):
         async for settings in db.settings_col.find({}):
             guild_id = settings.get("guild_id")
             logs_channel_id = settings.get("logs_channel_id")
@@ -499,30 +496,39 @@ class SetupCommands(commands.Cog):
                 continue
 
             all_users = await db.get_all_users(guild_id)
+            if not all_users:
+                continue
+
             total_messages = sum(int(user.get("message_count", 0)) for user in all_users)
-            top_users = all_users[:3]
+            top_users = all_users[:10]  # Top 10 nikalenge
             top_lines = []
-            medals = ["🥇", "🥈", "🥉"]
+            medals = ["🥇", "🥈", "🥉", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"]
             for i, user_data in enumerate(top_users):
                 member = guild.get_member(user_data.get("user_id"))
                 display = member.mention if member else f"`{user_data.get('user_id')}`"
-                top_lines.append(f"{medals[i]} {display} — {user_data.get('message_count', 0)}")
-            if not top_lines:
-                top_lines = ["No activity tracked in the last 24h window."]
+                medal = medals[i] if i < 10 else f"#{i+1}"
+                top_lines.append(f"{medal} {display} — {user_data.get('message_count', 0)}")
 
             embed = discord.Embed(
-                title="📊 Daily Activity Summary",
-                description=f"Server: **{guild.name}**",
+                title="⏳ Hourly Activity Summary",
+                description=f"Server: **{guild.name}**\nTop 10 Active Members",
                 color=0x5865F2,
                 timestamp=datetime.now(timezone.utc),
             )
             embed.add_field(name="Total Messages Tracked", value=str(total_messages), inline=False)
-            embed.add_field(name="Quick Active User Stats", value="\n".join(top_lines), inline=False)
-            embed.set_footer(text="an app by deep")
-            await logs_channel.send(embed=embed, view=self._branding_view())
+            embed.add_field(name="Top 10 Board", value="\n".join(top_lines), inline=False)
+            embed.set_footer(text="Built by Deep Dey | https://deepdey.vercel.app/")
 
-    @daily_activity_logs.before_loop
-    async def before_daily_activity_logs(self):
+            # Generate new rich HTML and JSON files
+            json_file = utils.generate_json_file(all_users, guild)
+            html_file = utils.generate_html_file(all_users, guild)
+
+            # Silent Mentions
+            allowed = discord.AllowedMentions(users=False, roles=False, everyone=False)
+            await logs_channel.send(embed=embed, files=[json_file, html_file], view=self._branding_view(), allowed_mentions=allowed)
+
+    @hourly_activity_logs.before_loop
+    async def before_hourly_activity_logs(self):
         await self.bot.wait_until_ready()
 
 async def setup(bot):
