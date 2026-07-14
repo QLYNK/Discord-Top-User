@@ -317,13 +317,16 @@ async def process_leaderboard(guild: discord.Guild, settings: dict):
     # 1. Pehle Logs Bhejo (Agar configured hai)
     all_users_data = await db.get_all_users(guild.id)
     if logs_channel:
-        if all_users_data:
-            json_file = utils.generate_json_file(all_users_data)
-            guild_icon = guild.icon.url if guild.icon else ""
-            html_file = utils.generate_html_file(all_users_data, guild.name, guild_icon)
-            await logs_channel.send(f"📄 **Automatic Cycle Reset Logs**\nData before leaderboard wipe:", files=[json_file, html_file])
-        else:
-            await logs_channel.send("📄 **Automatic Cycle Reset Logs**\nNo activity data found for this cycle.")
+        last_reset = settings.get("last_reset_time")
+        if last_reset and last_reset.tzinfo is None:
+            last_reset = last_reset.replace(tzinfo=timezone.utc)
+        
+        time_range = f"Since: <t:{int(last_reset.timestamp())}:F>" if last_reset else "All time"
+        
+        # Paginated silent embeds + HTML/JSON files bhejne wala naya method call hoga
+        await utils.send_paginated_backup_logs(
+            logs_channel, guild, all_users_data, time_range, "Automatic Cycle Reset"
+        )
 
     # 2. Top N Users Fetch Karo
     top_users = await db.get_top_users(guild.id, top_count)
