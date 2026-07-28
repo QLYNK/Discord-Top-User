@@ -95,6 +95,7 @@ async def on_ready():
         "cogs.productivity_commands",
         "cogs.proxy",
         "cogs.management_commands",  # <-- NAYA COG YAHAN ADD KIYA HAI
+        "cogs.ticket_commands",
     ):
         try:
             await bot.load_extension(extension)

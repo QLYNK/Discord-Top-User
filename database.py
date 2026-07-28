@@ -15,6 +15,8 @@ settings_col = db["GuildSettings"]
 activity_col = db["ActivityData"]
 user_profiles_col = db["user_profiles"]
 user_prefixes_col = db["UserPrefixes"]
+ticket_config_col = db["TicketConfig"]
+tickets_col = db["Tickets"]
 
 
 def _default_user_profile(user_id: int) -> dict:
@@ -268,3 +270,74 @@ async def get_user_global_rank(user_id: int) -> int:
         if _safe_int(profile.get("user_id")) == uid:
             return idx
     return len(profiles) + 1
+
+
+def _default_ticket_config(guild_id: int) -> dict:
+    return {
+        "guild_id": int(guild_id),
+        "panel_title": "Support Tickets",
+        "panel_description": "Select a category below to open a ticket.",
+        "panel_channel_id": None,
+        "panel_message_id": None,
+        "ticket_category_id": None,
+        "logs_channel_id": None,
+        "auto_close_hours": 72,
+        "ticket_counter": 0,
+        "categories": [],
+    }
+
+
+async def get_ticket_config(guild_id: int) -> dict:
+    config = await ticket_config_col.find_one({"guild_id": int(guild_id)})
+    if not config:
+        config = _default_ticket_config(guild_id)
+        await ticket_config_col.insert_one(config)
+        config.pop("_id", None)
+    return config
+
+
+async def update_ticket_config(guild_id: int, data: dict) -> None:
+    await ticket_config_col.update_one(
+        {"guild_id": int(guild_id)},
+        {"$set": data},
+        upsert=True,
+    )
+
+
+async def next_ticket_id(guild_id: int) -> int:
+    doc = await ticket_config_col.find_one_and_update(
+        {"guild_id": int(guild_id)},
+        {"$inc": {"ticket_counter": 1}},
+        upsert=True,
+        return_document=True,
+    )
+    return max(1, _safe_int((doc or {}).get("ticket_counter", 1)))
+
+
+async def create_ticket_record(data: dict) -> dict:
+    await tickets_col.insert_one(data)
+    return data
+
+
+async def get_ticket_by_channel(channel_id: int) -> dict | None:
+    return await tickets_col.find_one({"channel_id": int(channel_id)})
+
+
+async def get_ticket(guild_id: int, ticket_id: int) -> dict | None:
+    return await tickets_col.find_one({"guild_id": int(guild_id), "ticket_id": int(ticket_id)})
+
+
+async def update_ticket(guild_id: int, ticket_id: int, data: dict) -> None:
+    await tickets_col.update_one(
+        {"guild_id": int(guild_id), "ticket_id": int(ticket_id)},
+        {"$set": data},
+    )
+
+
+async def update_ticket_by_channel(channel_id: int, data: dict) -> None:
+    await tickets_col.update_one({"channel_id": int(channel_id)}, {"$set": data})
+
+
+async def get_open_tickets(guild_id: int) -> list[dict]:
+    cursor = tickets_col.find({"guild_id": int(guild_id), "status": {"$in": ["open", "closed"]}})
+    return await cursor.to_list(length=None)

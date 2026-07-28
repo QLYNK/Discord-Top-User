@@ -52,6 +52,15 @@ Discord-Top-User is a full bot platform that combines:
 - Telemetry-backed exception logging.
 - API safety wrappers and resilient fallback behavior.
 
+### 7) Ticket System
+- Full support ticket workflow with admin-only setup commands.
+- Dynamic categories with up to 7 custom form questions per category.
+- Public panel embed with category dropdown and modal forms.
+- Claim / unclaim flow with role-aware channel permissions.
+- HTML, JSON, and TXT transcript export on close/delete.
+- Ticket logs channel, auto-close on inactivity, priority, tags, and staff notes.
+- Post-close rating via DM.
+
 ---
 
 ## Quick Start (Local Setup)
@@ -121,11 +130,14 @@ cogs/
   productivity_commands.py
   proxy.py
   setup_commands.py
+  ticket_commands.py      # Ticket system cog (NEW)
   utility_commands.py
 utils/
   audio_manager.py
   branding_view.py
   discord_resilience.py
+data/
+  transcripts/            # Local transcript storage (auto-created, gitignored)
 main.py
 keep_alive.py
 database.py
@@ -133,6 +145,60 @@ telemetry.py
 Docerfile
 .github/
 ```
+
+---
+
+## Ticket System Setup
+
+All setup commands require **Administrator** permission.
+
+### 1) Configure base settings
+
+```text
+/ticket config set ticket_category:#Tickets logs_channel:#ticket-logs auto_close_hours:72
+```
+
+### 2) Add categories
+
+```text
+/ticket category add key:support name:General Support description:Help with general issues emoji:🎫 staff_roles:@Support @Mod
+```
+
+Add form questions (up to 7) when editing a category:
+
+```text
+/ticket category edit key:support question_json:[{"title":"Issue","description":"Describe your problem","placeholder":"I need help with...","required":true,"style":"short"},{"title":"Details","description":"Extra context","placeholder":"...","required":false,"style":"paragraph"}]
+```
+
+### 3) Create the public panel
+
+```text
+/ticket panel create channel:#open-ticket title:Support Center description:Select a category below to open a ticket.
+```
+
+Use `/ticket panel update` after changing categories or panel text.
+
+### 4) Ticket channel commands (inside a ticket)
+
+| Command | Who | Description |
+|---|---|---|
+| `/ticket claim` | Staff | Claim ticket (only claimant + owner can talk) |
+| `/ticket unclaim` | Claimant/Admin | Release claim back to all staff |
+| `/ticket close` | Owner/Staff | Close + generate transcript |
+| `/ticket delete` | Staff/Admin | Delete channel (transcript first if open) |
+| `/ticket reopen` | Staff | Reopen a closed ticket |
+| `/ticket adduser` | Owner/Staff | Add a member to the ticket |
+| `/ticket removeuser` | Staff | Remove a member |
+| `/ticket lock` / `unlock` | Staff | Lock/unlock sending |
+| `/ticket rename` | Owner/Staff | Rename ticket channel |
+| `/ticket transcript` | Owner/Staff | Export HTML/JSON/TXT |
+| `/ticket priority` | Staff | Set low/normal/high/urgent |
+| `/ticket tag` | Staff | Add/remove tags |
+| `/ticket note` | Staff | Internal staff note |
+
+Ticket channels are named: `{username}-{ticket_id}-{category}` (sanitized for Discord limits).
+
+Transcripts are saved locally under `data/transcripts/{guild_id}/` and only metadata/paths are stored in MongoDB.
 
 ---
 
