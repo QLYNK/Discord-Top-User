@@ -164,7 +164,7 @@ class TicketTranscriptGenerator:
                     "author_id": str(msg.author.id),
                     "author_name": str(msg.author),
                     "author_bot": msg.author.bot,
-                    "author_avatar": getattr(msg.author, "avatar", None) or getattr(msg.author, "display_avatar", None) and getattr(msg.author.display_avatar, "url", None),
+                    "author_avatar": (lambda m: (getattr(m.display_avatar, 'url', None) if getattr(m, 'display_avatar', None) is not None else (getattr(m.avatar, 'url', None) if getattr(m, 'avatar', None) is not None else None)))(msg.author),
                     "content": msg.content or "",
                     "mentions": mentions,
                     "timestamp": msg.created_at.replace(tzinfo=timezone.utc).isoformat(),
