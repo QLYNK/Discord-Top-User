@@ -155,13 +155,18 @@ class TicketTranscriptGenerator:
             if isinstance(ref, discord.Message):
                 reply_to = {"id": str(ref.id), "author": str(ref.author), "content": ref.content[:200]}
 
+            # Build a simple mentions map for nicer transcript rendering
+            mentions = [{"id": str(m.id), "name": str(m)} for m in msg.mentions]
+
             messages.append(
                 {
                     "id": str(msg.id),
                     "author_id": str(msg.author.id),
                     "author_name": str(msg.author),
                     "author_bot": msg.author.bot,
+                    "author_avatar": getattr(msg.author, "avatar", None) or getattr(msg.author, "display_avatar", None) and getattr(msg.author.display_avatar, "url", None),
                     "content": msg.content or "",
+                    "mentions": mentions,
                     "timestamp": msg.created_at.replace(tzinfo=timezone.utc).isoformat(),
                     "edited_at": msg.edited_at.replace(tzinfo=timezone.utc).isoformat() if msg.edited_at else None,
                     "attachments": attachments,
@@ -244,7 +249,15 @@ class TicketTranscriptGenerator:
 
         rows = ""
         for msg in messages:
-            content = html.escape(msg["content"] or "").replace("\n", "<br>")
+            # render mentions into readable @name form
+            content_raw = msg.get("content") or ""
+            content_escaped = html.escape(content_raw).replace("\n", "<br>")
+            for m in msg.get("mentions", []):
+                # replace common mention token forms
+                content_escaped = content_escaped.replace(html.escape(f"<@{m['id']}"), f"@{html.escape(m['name'])}")
+                content_escaped = content_escaped.replace(html.escape(f"<@!{m['id']}"), f"@{html.escape(m['name'])}")
+            content = content_escaped
+
             att_html = ""
             if msg["attachments"]:
                 att_html = "<br>".join(
@@ -253,10 +266,19 @@ class TicketTranscriptGenerator:
                 )
             reply_html = ""
             if msg["reply_to"]:
-                reply_html = (
-                    f'<div class="reply">↪ Replying to <b>{html.escape(msg["reply_to"]["author"])}</b>: '
-                    f'{html.escape(msg["reply_to"]["content"])}</div>'
-                )
+                # include a link to the referenced message when possible
+                ref = msg["reply_to"]
+                try:
+                    ref_link = f"https://discord.com/channels/{guild.id}/{channel.id}/{ref['id']}"
+                    reply_html = (
+                        f'<div class="reply">↪ Replying to <b>{html.escape(ref["author"])}</b>: '
+                        f'<a href="{html.escape(ref_link)}">{html.escape(ref["content"])}</a></div>'
+                    )
+                except Exception:
+                    reply_html = (
+                        f'<div class="reply">↪ Replying to <b>{html.escape(ref["author"])}</b>: '
+                        f'{html.escape(ref["content"])}</div>'
+                    )
             embed_html = ""
             for emb in msg["embeds"]:
                 if emb.get("title") or emb.get("description"):
@@ -264,9 +286,15 @@ class TicketTranscriptGenerator:
                         f'<div class="embed"><b>{html.escape(emb.get("title") or "Embed")}</b><br>'
                         f'{html.escape(emb.get("description") or "")}</div>'
                     )
+
+            avatar_html = ""
+            if msg.get("author_avatar"):
+                avatar_url = html.escape(msg.get("author_avatar") or "")
+                avatar_html = f'<img src="{avatar_url}" class="avatar" width="40" height="40" style="border-radius:20px; vertical-align:middle; margin-right:8px;">'
+
             rows += f"""
             <div class="message">
-                <div class="meta"><span class="author">{html.escape(msg['author_name'])}</span>
+                <div class="meta">{avatar_html}<span class="author">{html.escape(msg['author_name'])}</span>
                 <span class="time">{html.escape(msg['timestamp'])}</span></div>
                 {reply_html}
                 <div class="content">{content or '<i>[no text]</i>'}</div>
@@ -280,17 +308,19 @@ class TicketTranscriptGenerator:
 <style>
 body {{ font-family: Segoe UI, sans-serif; background:#313338; color:#dbdee1; margin:0; padding:20px; }}
 .container {{ max-width:960px; margin:auto; background:#2b2d31; padding:20px; border-radius:8px; }}
-.header {{ border-bottom:1px solid #1e1f22; padding-bottom:12px; margin-bottom:16px; }}
+.header {{ border-bottom:1px solid #1e1f22; padding-bottom:12px; margin-bottom:16px; display:flex; align-items:center; gap:12px; }}
+.header img.server-icon {{ width:48px; height:48px; border-radius:8px; }}
 .message {{ padding:10px 0; border-bottom:1px solid #1e1f22; }}
-.meta {{ color:#949ba4; font-size:12px; margin-bottom:4px; }}
+.meta {{ color:#949ba4; font-size:12px; margin-bottom:4px; display:flex; align-items:center; gap:8px; }}
 .author {{ color:#fff; font-weight:600; margin-right:8px; }}
 .content {{ white-space:pre-wrap; }}
 .reply {{ font-size:12px; color:#949ba4; margin-bottom:4px; }}
 .embed {{ margin-top:6px; padding:8px; border-left:3px solid #5865F2; background:#1e1f22; font-size:13px; }}
+.avatar {{ vertical-align:middle; }}
 a {{ color:#00aff4; }}
 </style></head><body><div class="container">
-<div class="header"><h2>Ticket #{ticket.get('ticket_id')} — {html.escape(channel.name)}</h2>
-<p>Guild: {html.escape(guild.name)} • Category: {html.escape(str(ticket.get('category_key')))}</p></div>
+<div class="header">{f'<img src="{html.escape(guild.icon.url)}" class="server-icon">' if getattr(guild, 'icon', None) else ''}<div><h2>Ticket #{ticket.get('ticket_id')} — {html.escape(channel.name)}</h2>
+<p>Guild: <a href="https://discord.com/channels/{guild.id}">{html.escape(guild.name)}</a> • Category: {html.escape(str(ticket.get('category_key')))}</p></div></div>
 {rows}
 </div></body></html>"""
         with open(html_path, "w", encoding="utf-8") as f:
@@ -452,11 +482,12 @@ class TicketControlView(discord.ui.View):
 
 
 class RatingView(discord.ui.View):
-    def __init__(self, cog: "TicketCommands", guild_id: int, ticket_id: int):
+    def __init__(self, cog: "TicketCommands", guild_id: int, ticket_id: int, allowed_user_id: int | None = None):
         super().__init__(timeout=86400)
         self.cog = cog
         self.guild_id = guild_id
         self.ticket_id = ticket_id
+        self.allowed_user_id = allowed_user_id
         for i in range(1, 6):
             self.add_item(self._make_star(i))
 
@@ -464,7 +495,23 @@ class RatingView(discord.ui.View):
         btn = discord.ui.Button(label=str(stars), emoji="⭐", style=discord.ButtonStyle.secondary, row=0)
 
         async def callback(interaction: discord.Interaction):
+            # only allow the designated user (if set) to rate here
+            if self.allowed_user_id and interaction.user.id != int(self.allowed_user_id):
+                await interaction.response.send_message("Only the ticket owner can rate this ticket.", ephemeral=True)
+                return
             await db.update_ticket(self.guild_id, self.ticket_id, {"rating": stars, "rated_at": _utc_now()})
+            # log the rating in the logs channel if configured
+            try:
+                cfg = await db.get_ticket_config(interaction.guild.id)
+                await self.cog._log_action(
+                    interaction.guild, cfg,
+                    title="⭐ Ticket Rated",
+                    description=f"Ticket #{self.ticket_id} rated {stars}/5 by {interaction.user}",
+                    user=interaction.user, color=0x57F287,
+                    fields=[("Ticket", f"#{self.ticket_id}", True), ("Rating", str(stars), True)],
+                )
+            except Exception:
+                pass
             await interaction.response.edit_message(content=f"Thanks for rating this ticket **{stars}/5**!", view=None)
 
         btn.callback = callback
@@ -1100,21 +1147,66 @@ class TicketCommands(commands.Cog):
         )
 
         owner = interaction.guild.get_member(ticket.get("owner_id"))
-        for target, send in ((owner, True), (member, False)):
-            if target and send:
-                try:
+
+        # send transcripts to logs channel (if configured)
+        try:
+            logs_id = config.get("logs_channel_id")
+            if logs_id:
+                logs_ch = interaction.guild.get_channel(int(logs_id))
+                if isinstance(logs_ch, discord.TextChannel):
                     files = []
                     for fmt in ("html", "json", "txt"):
                         p = paths.get(fmt)
                         if p and os.path.isfile(p):
                             files.append(discord.File(p, filename=os.path.basename(p)))
-                    await target.send(
-                        f"Your ticket **#{ticket['ticket_id']}** was closed.",
-                        files=files[:3] if files else None,
-                        view=RatingView(self, interaction.guild.id, ticket["ticket_id"]),
-                    )
-                except discord.HTTPException:
-                    pass
+                    try:
+                        await logs_ch.send(content=f"Transcript for ticket #{ticket['ticket_id']}", files=files[:3] if files else None)
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
+        # send DM to owner; if owner has DMs closed, post a public rating prompt in the ticket channel
+        dm_sent = False
+        if owner:
+            try:
+                files = []
+                for fmt in ("html", "json", "txt"):
+                    p = paths.get(fmt)
+                    if p and os.path.isfile(p):
+                        files.append(discord.File(p, filename=os.path.basename(p)))
+                await owner.send(
+                    f"Your ticket **#{ticket['ticket_id']}** was closed.",
+                    files=files[:3] if files else None,
+                    view=RatingView(self, interaction.guild.id, ticket["ticket_id"]),
+                )
+                dm_sent = True
+            except discord.HTTPException:
+                dm_sent = False
+
+        # also DM the claimed staff and the server owner with transcript (if different)
+        try:
+            claimed = ticket.get("claimed_by")
+            claimed_member = interaction.guild.get_member(claimed) if claimed else None
+            for m in (claimed_member, interaction.guild.owner):
+                if m and m != owner:
+                    try:
+                        files = []
+                        for fmt in ("html", "json", "txt"):
+                            p = paths.get(fmt)
+                            if p and os.path.isfile(p):
+                                files.append(discord.File(p, filename=os.path.basename(p)))
+                        await m.send(f"Transcript for ticket **#{ticket['ticket_id']}**", files=files[:3] if files else None)
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
+        if not dm_sent and owner:
+            try:
+                await channel.send(f"{owner.mention}, your ticket was closed — please rate the support below:", view=RatingView(self, interaction.guild.id, ticket["ticket_id"], allowed_user_id=owner.id))
+            except Exception:
+                pass
 
         await channel.set_permissions(interaction.guild.default_role, view_channel=False)
         if owner:
@@ -1371,6 +1463,76 @@ class TicketCommands(commands.Cog):
         notes.append({"author_id": member.id, "note": note[:1000], "at": _utc_now().isoformat()})
         await db.update_ticket(interaction.guild_id, ticket["ticket_id"], {"staff_notes": notes[-50:]})
         await interaction.response.send_message("✅ Staff note saved.", ephemeral=True)
+
+    class UsersSelect(discord.ui.Select):
+        def __init__(self, cog: "TicketCommands", options: list[discord.SelectOption]):
+            super().__init__(placeholder="Select a user to view ticket history", min_values=1, max_values=1, options=options)
+            self.cog = cog
+
+        async def callback(self, interaction: discord.Interaction):
+            await interaction.response.defer(ephemeral=True)
+            user_id = int(self.values[0])
+            guild = interaction.guild
+            tickets = await db.tickets_col.find({"guild_id": guild.id, "owner_id": user_id}).to_list(length=50)
+            if not tickets:
+                await interaction.followup.send("No tickets found for that user.", ephemeral=True)
+                return
+            lines = []
+            total = len(tickets)
+            closed = sum(1 for t in tickets if t.get("status") == "closed")
+            rated = [t for t in tickets if t.get("rating") is not None]
+            avg = 0
+            if rated:
+                avg = sum(float(t.get("rating", 0)) for t in rated) / len(rated)
+            member = guild.get_member(user_id) or (await self.cog.bot.fetch_user(user_id))
+            title = f"Tickets for {member} ({total})"
+            for t in tickets[:25]:
+                created = t.get("created_at")
+                closed_at = t.get("closed_at")
+                rating = t.get("rating") if t.get("rating") is not None else "-"
+                lines.append(f"#{t.get('ticket_id')} • {t.get('category_key')} • {t.get('status')} • rating: {rating} • opened: {created} • closed: {closed_at}")
+            embed = discord.Embed(title=title, description=f"Closed: {closed} • Rated: {len(rated)} • Avg: {avg:.2f}", color=0x5865F2)
+            embed.add_field(name="Recent tickets", value="\n".join(lines[:10]) or "None", inline=False)
+            await interaction.followup.send(embed=embed, ephemeral=True)
+
+    @ticket_group.command(name="overview", description="Show ticket statistics and per-user lookup (admin)")
+    async def ticket_overview(self, interaction: discord.Interaction):
+        if not self._require_admin(interaction):
+            await interaction.response.send_message("❌ Administrator permission required.", ephemeral=True)
+            return
+        guild = interaction.guild
+        total = await db.tickets_col.count_documents({"guild_id": guild.id})
+        open_count = await db.tickets_col.count_documents({"guild_id": guild.id, "status": "open"})
+        closed_count = await db.tickets_col.count_documents({"guild_id": guild.id, "status": "closed"})
+        successful = await db.tickets_col.count_documents({"guild_id": guild.id, "status": "closed", "rating": {"$exists": True}})
+        rated_docs = await db.tickets_col.find({"guild_id": guild.id, "rating": {"$exists": True}}).to_list(length=None)
+        avg = 0
+        if rated_docs:
+            avg = sum(float(d.get("rating", 0)) for d in rated_docs) / len(rated_docs)
+        # build user dropdown
+        owners = await db.tickets_col.find({"guild_id": guild.id, "owner_id": {"$ne": None}}, {"owner_id": 1}).to_list(length=None)
+        seen = []
+        options = []
+        for doc in owners:
+            oid = int(doc.get("owner_id"))
+            if oid in seen:
+                continue
+            seen.append(oid)
+            member = guild.get_member(oid)
+            label = str(member)[:100] if member else str(oid)
+            options.append(discord.SelectOption(label=label, value=str(oid)))
+            if len(options) >= 25:
+                break
+        view = discord.ui.View()
+        if options:
+            view.add_item(UsersSelect(self, options))
+        embed = discord.Embed(title="Ticket Overview", color=0x5865F2)
+        embed.add_field(name="Total", value=str(total), inline=True)
+        embed.add_field(name="Open", value=str(open_count), inline=True)
+        embed.add_field(name="Closed", value=str(closed_count), inline=True)
+        embed.add_field(name="Successfully closed (rated)", value=str(successful), inline=True)
+        embed.add_field(name="Average rating", value=f"{avg:.2f}", inline=True)
+        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
     @ticket_group.command(name="setup", description="Show recommended server setup steps for this ticket system (admin only)")
     async def ticket_setup(self, interaction: discord.Interaction):
