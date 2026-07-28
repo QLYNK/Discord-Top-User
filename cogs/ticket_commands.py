@@ -1381,4 +1381,4 @@ class TicketCommands(commands.Cog):
 async def setup(bot: commands.Bot):
     cog = TicketCommands(bot)
     await bot.add_cog(cog)
-    bot.tree.add_command(TicketCommands.ticket_group)
+ #  bot.tree.add_command(TicketCommands.ticket_group)
