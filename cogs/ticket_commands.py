@@ -17,6 +17,9 @@ import discord
 from discord import app_commands
 from discord.ext import commands, tasks
 
+import aiohttp
+import asyncio
+
 import database as db
 from telemetry import log_exception, send_activity_log
 
@@ -528,6 +531,27 @@ class RatingDetailModal(discord.ui.Modal):
         await interaction.response.send_message("Thanks for the feedback!", ephemeral=True)
 
 
+class DetailedPromptView(discord.ui.View):
+    def __init__(self, cog: "TicketCommands", guild_id: int, ticket_id: int, author_id: int):
+        super().__init__(timeout=1800)
+        self.cog = cog
+        self.guild_id = guild_id
+        self.ticket_id = ticket_id
+        self.author_id = author_id
+
+    @discord.ui.button(label="Add detailed feedback", style=discord.ButtonStyle.secondary)
+    async def detail_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != int(self.author_id):
+            await interaction.response.send_message("Only the ticket owner can provide detailed feedback.", ephemeral=True)
+            return
+        modal = RatingDetailModal(self.cog, self.guild_id, self.ticket_id, interaction.user.id)
+        await interaction.response.send_modal(modal)
+
+    async def on_timeout(self):
+        # nothing to do on timeout for this ephemeral prompt
+        pass
+
+
 class RatingView(discord.ui.View):
     def __init__(self, cog: "TicketCommands", guild_id: int, ticket_id: int, allowed_user_id: int | None = None):
         # 30 minutes timeout
@@ -553,16 +577,38 @@ class RatingView(discord.ui.View):
             # log the rating in the logs channel if configured
             try:
                 cfg = await db.get_ticket_config(interaction.guild.id)
-                await self.cog._log_action(
-                    interaction.guild, cfg,
-                    title="⭐ Ticket Rated",
-                    description=f"Ticket #{self.ticket_id} rated {stars}/5 by {interaction.user}",
-                    user=interaction.user, color=0x57F287,
-                    fields=[("Ticket", f"#{self.ticket_id}", True), ("Rating", str(stars), True)],
-                )
+                try:
+                    cfg = await db.get_ticket_config(interaction.guild.id)
+                    # fetch ticket details for logging
+                    ticket_doc = await db.get_ticket(self.guild_id, self.ticket_id)
+                    channel_field = "-"
+                    owner_field = "-"
+                    if ticket_doc:
+                        ch_id = ticket_doc.get("channel_id")
+                        owner_field = f"<@{ticket_doc.get('owner_id')}>" if ticket_doc.get('owner_id') else "-"
+                        ch = interaction.guild.get_channel(ch_id) if ch_id else None
+                        channel_field = ch.mention if ch else str(ch_id) if ch_id else "-"
+                    await self.cog._log_action(
+                        interaction.guild, cfg,
+                        title="⭐ Ticket Rated",
+                        description=f"Ticket #{self.ticket_id} rated {stars}/5 by {interaction.user}",
+                        user=interaction.user, color=0x57F287,
+                        fields=[("Ticket", f"#{self.ticket_id}", True), ("Rating", str(stars), True), ("Channel", channel_field, True), ("Owner", owner_field, True)],
+                    )
+                except Exception:
+                    pass
+
+                # edit the channel message thanking and keep view removed
+                await interaction.response.edit_message(content=f"Thanks for rating this ticket **{stars}/5**!", view=None)
+
+                # send optional ephemeral prompt to add detailed feedback
+                try:
+                    view = DetailedPromptView(self.cog, self.guild_id, self.ticket_id, interaction.user.id)
+                    await interaction.followup.send("Would you like to add detailed feedback?", view=view, ephemeral=True)
+                except Exception:
+                    pass
             except Exception:
                 pass
-            await interaction.response.edit_message(content=f"Thanks for rating this ticket **{stars}/5**!", view=None)
 
         btn.callback = callback
         return btn
@@ -612,10 +658,22 @@ class TicketCommands(commands.Cog):
         parent=ticket_group,
         default_permissions=discord.Permissions(administrator=True),
     )
+    voice_group = app_commands.Group(
+        name="voice",
+        description="Voice channel utilities (admin)",
+    )
 
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.auto_close_loop.start()
+        self.voice_counter_task = self.bot.loop.create_task(self._voice_counter_loop())
+
+    def cog_unload(self):
+        self.auto_close_loop.cancel()
+        try:
+            self.voice_counter_task.cancel()
+        except Exception:
+            pass
 
     def cog_unload(self):
         self.auto_close_loop.cancel()
@@ -1081,6 +1139,39 @@ class TicketCommands(commands.Cog):
         await msg.edit(embed=embed, view=view)
         self.bot.add_view(view)
         await interaction.response.send_message("✅ Panel updated.", ephemeral=True)
+
+    # ── Voice counter commands ─────────────────────────────────────────
+
+    @voice_group.command(name="create", description="Create a tracked voice counter channel (admin)")
+    @app_commands.describe(template="Name template (placeholders: {yt},{ig},{date},{time},{members},{humans},{bots},{prefix})", youtube_url="Optional YouTube channel URL to fetch followers", instagram_manual="Optional manual instagram follower count (number)")
+    async def voice_create(self, interaction: discord.Interaction, template: str, youtube_url: str | None = None, instagram_manual: str | None = None):
+        if not self._require_admin(interaction):
+            await interaction.response.send_message("❌ Administrator permission required.", ephemeral=True)
+            return
+        guild = interaction.guild
+        overwrites = {
+            guild.default_role: discord.PermissionOverwrite(connect=False, view_channel=True)
+        }
+        try:
+            ch = await guild.create_voice_channel(name=template[:100], overwrites=overwrites)
+        except Exception as exc:
+            await interaction.response.send_message(f"❌ Failed to create voice channel: {exc}", ephemeral=True)
+            return
+        cfg = await db.get_ticket_config(guild.id)
+        vcs = list(cfg.get("voice_counters") or [])
+        vcs.append({"channel_id": ch.id, "template": template, "youtube_url": youtube_url, "instagram_manual": instagram_manual})
+        await db.update_ticket_config(guild.id, {"voice_counters": vcs})
+        await interaction.response.send_message(f"✅ Voice counter created: {ch.mention}", ephemeral=True)
+
+    @voice_group.command(name="remove", description="Remove a voice counter by channel ID (admin)")
+    async def voice_remove(self, interaction: discord.Interaction, channel_id: int):
+        if not self._require_admin(interaction):
+            await interaction.response.send_message("❌ Administrator permission required.", ephemeral=True)
+            return
+        cfg = await db.get_ticket_config(interaction.guild_id)
+        vcs = [v for v in (cfg.get("voice_counters") or []) if v.get("channel_id") != channel_id]
+        await db.update_ticket_config(interaction.guild_id, {"voice_counters": vcs})
+        await interaction.response.send_message("✅ Voice counter removed.", ephemeral=True)
 
     # ── Config command ─────────────────────────────────────────────────
 
@@ -1598,16 +1689,20 @@ class TicketCommands(commands.Cog):
             options.append(discord.SelectOption(label=label, value=str(oid)))
             if len(options) >= 25:
                 break
-        view = discord.ui.View()
-        if options:
-            view.add_item(self.UsersSelect(self, options))
+        # add extra stats: detailed feedback count
+        detailed_count = await db.tickets_col.count_documents({"guild_id": guild.id, "detailed_rating": {"$exists": True}})
         embed = discord.Embed(title="Ticket Overview", color=0x5865F2)
         embed.add_field(name="Total", value=str(total), inline=True)
         embed.add_field(name="Open", value=str(open_count), inline=True)
         embed.add_field(name="Closed", value=str(closed_count), inline=True)
         embed.add_field(name="Successfully closed (rated)", value=str(successful), inline=True)
+        embed.add_field(name="Detailed feedbacks", value=str(detailed_count), inline=True)
         embed.add_field(name="Average rating", value=f"{avg:.2f}", inline=True)
+        view = discord.ui.View()
+        if options:
+            view.add_item(self.UsersSelect(self, options))
         await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+        return
 
     @ticket_group.command(name="setup", description="Show recommended server setup steps for this ticket system (admin only)")
     async def ticket_setup(self, interaction: discord.Interaction):
@@ -1693,6 +1788,84 @@ class TicketCommands(commands.Cog):
     @auto_close_loop.before_loop
     async def before_auto_close(self):
         await self.bot.wait_until_ready()
+
+    async def _fetch_youtube_followers(self, channel_url: str) -> int | None:
+        providers = [
+            f"https://pulse.walls.sh/profile?url={channel_url}",
+        ]
+        async with aiohttp.ClientSession() as session:
+            for url in providers:
+                try:
+                    async with session.get(url, timeout=10) as resp:
+                        if resp.status != 200:
+                            continue
+                        data = await resp.json()
+                        if isinstance(data, dict) and data.get("followers") is not None:
+                            try:
+                                return int(data.get("followers") or 0)
+                            except Exception:
+                                return None
+                except Exception:
+                    continue
+        return None
+
+    def _format_count(self, n: int) -> str:
+        if n >= 1_000_000_000:
+            return f"{n/1_000_000_000:.1f}B"
+        if n >= 1_000_000:
+            return f"{n/1_000_000:.1f}M"
+        if n >= 1_000:
+            return f"{n/1_000:.0f}k"
+        return str(n)
+
+    async def _voice_counter_loop(self):
+        await self.bot.wait_until_ready()
+        while True:
+            try:
+                async for cfg in db.ticket_config_col.find({"voice_counters": {"$exists": True}}):
+                    guild = self.bot.get_guild(cfg.get("guild_id"))
+                    if not guild:
+                        continue
+                    for vc in cfg.get("voice_counters", []):
+                        ch = guild.get_channel(vc.get("channel_id"))
+                        if not ch or not isinstance(ch, discord.VoiceChannel):
+                            continue
+                        # prepare parts
+                        members = guild.member_count or 0
+                        bots = sum(1 for m in guild.members if m.bot)
+                        humans = members - bots
+                        yt_count = None
+                        if vc.get("youtube_url"):
+                            yt_count = await self._fetch_youtube_followers(vc.get("youtube_url"))
+                        ig_manual = vc.get("instagram_manual")
+                        parts = vc.get("template", "{prefix} {yt} {ig} {members} {date} {time}")
+                        # replace placeholders
+                        name = parts
+                        name = name.replace("{members}", str(members))
+                        name = name.replace("{humans}", str(humans))
+                        name = name.replace("{bots}", str(bots))
+                        if yt_count is not None:
+                            name = name.replace("{yt}", self._format_count(yt_count))
+                        else:
+                            name = name.replace("{yt}", "-")
+                        if ig_manual is not None:
+                            try:
+                                name = name.replace("{ig}", self._format_count(int(ig_manual)))
+                            except Exception:
+                                name = name.replace("{ig}", str(ig_manual))
+                        else:
+                            name = name.replace("{ig}", "-")
+                        now = _utc_now()
+                        name = name.replace("{date}", now.strftime("%d %b %Y"))
+                        name = name.replace("{time}", now.strftime("%H:%M"))
+                        name = name[:100]
+                        try:
+                            await ch.edit(name=name)
+                        except Exception:
+                            pass
+            except Exception:
+                pass
+            await asyncio.sleep(60)
 
 
 async def setup(bot: commands.Bot):
