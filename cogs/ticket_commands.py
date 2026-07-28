@@ -174,6 +174,14 @@ class TicketTranscriptGenerator:
 
     @staticmethod
     def _meta(ticket: dict, guild: discord.Guild, channel: discord.TextChannel) -> dict:
+        def _fmt_dt(val):
+            if isinstance(val, datetime):
+                # ensure UTC ISO timestamp
+                return val.replace(tzinfo=timezone.utc).isoformat()
+            if isinstance(val, str):
+                return val
+            return None
+
         return {
             "guild": {"id": str(guild.id), "name": guild.name},
             "channel": {"id": str(channel.id), "name": channel.name},
@@ -185,8 +193,8 @@ class TicketTranscriptGenerator:
             "priority": ticket.get("priority"),
             "tags": ticket.get("tags", []),
             "form_answers": ticket.get("form_answers", {}),
-            "created_at": ticket.get("created_at"),
-            "closed_at": ticket.get("closed_at"),
+            "created_at": _fmt_dt(ticket.get("created_at")),
+            "closed_at": _fmt_dt(ticket.get("closed_at")),
             "exported_at": _utc_now().isoformat(),
         }
 
@@ -433,6 +441,10 @@ class TicketControlView(discord.ui.View):
     @discord.ui.button(label="Lock", style=discord.ButtonStyle.secondary, custom_id="ticket:lock")
     async def lock_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self.cog.handle_lock(interaction, locked=True)
+
+    @discord.ui.button(label="Unlock", style=discord.ButtonStyle.secondary, custom_id="ticket:unlock")
+    async def unlock_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.cog.handle_lock(interaction, locked=False)
 
     @discord.ui.button(label="Transcript", style=discord.ButtonStyle.secondary, custom_id="ticket:transcript")
     async def transcript_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -791,6 +803,54 @@ class TicketCommands(commands.Cog):
 
         await db.update_ticket_config(interaction.guild_id, {"categories": categories})
         await interaction.response.send_message(f"✅ Category **`{key}`** updated.", ephemeral=True)
+
+    @category_group.command(name="add-question", description="Add a single question to a category (admin)")
+    @app_commands.describe(
+        key="Category slug to edit",
+        title="Question title",
+        description="Optional description shown to the user",
+        placeholder="Optional placeholder text",
+        required="Whether the question is required (default: true)",
+        style="Input style: short or paragraph",
+    )
+    async def category_add_question(
+        self,
+        interaction: discord.Interaction,
+        key: str,
+        title: str,
+        description: str | None = None,
+        placeholder: str | None = None,
+        required: bool = True,
+        style: str | None = None,
+    ):
+        if not self._require_admin(interaction):
+            await interaction.response.send_message("❌ Administrator permission required.", ephemeral=True)
+            return
+        config = await db.get_ticket_config(interaction.guild_id)
+        categories = list(config.get("categories") or [])
+        target = None
+        for cat in categories:
+            if cat.get("key") == key:
+                target = cat
+                break
+        if not target:
+            await interaction.response.send_message(f"❌ Category `{key}` not found.", ephemeral=True)
+            return
+        all_qs = list(target.get("questions") or [])
+        if len(all_qs) >= MAX_QUESTIONS:
+            await interaction.response.send_message(f"❌ Category already has maximum of {MAX_QUESTIONS} questions.", ephemeral=True)
+            return
+        q = {
+            "title": str(title)[:45],
+            "description": (str(description) if description else "")[:200],
+            "placeholder": (str(placeholder) if placeholder else "")[:100],
+            "required": bool(required),
+            "style": "paragraph" if (style and style.lower() == "paragraph") else "short",
+        }
+        all_qs.append(q)
+        target["questions"] = all_qs
+        await db.update_ticket_config(interaction.guild_id, {"categories": categories})
+        await interaction.response.send_message(f"✅ Question added to category **`{key}`** ({len(all_qs)}/{MAX_QUESTIONS}).\nYou can still use `question_json` when editing multiple at once.", ephemeral=True)
 
     @category_group.command(name="delete", description="Delete a ticket category")
     async def category_delete(self, interaction: discord.Interaction, key: str):
@@ -1311,6 +1371,26 @@ class TicketCommands(commands.Cog):
         notes.append({"author_id": member.id, "note": note[:1000], "at": _utc_now().isoformat()})
         await db.update_ticket(interaction.guild_id, ticket["ticket_id"], {"staff_notes": notes[-50:]})
         await interaction.response.send_message("✅ Staff note saved.", ephemeral=True)
+
+    @ticket_group.command(name="setup", description="Show recommended server setup steps for this ticket system (admin only)")
+    async def ticket_setup(self, interaction: discord.Interaction):
+        if not self._require_admin(interaction):
+            await interaction.response.send_message("❌ Administrator permission required.", ephemeral=True)
+            return
+        steps = [
+            "1. Create a dedicated 'Support' category and staff roles (IDs will be used when configuring categories).",
+            "2. Ensure the bot has Manage Channels, Send Messages, Manage Permissions, and Read Message History in ticket channels.",
+            "3. Create a channel for the public ticket panel where users open tickets (bot posts a panel message).",
+            "4. Configure categories with `/ticket category add` and use `/ticket category edit` to add questions (or `/ticket category add-question` to add one).",
+            "5. Optional: Enable auto-close in the config and ensure the bot can send DMs if you want owner notifications.",
+            "6. Transcripts are stored under data/transcripts/{guild_id}/ locally. Make sure the hosting environment preserves that directory or configure backup/export.",
+            "7. If using a database (MongoDB), ensure the connection string is set in your environment and the bot can reach it.",
+            "8. For panels and permissions: add staff role IDs to categories so staff can manage tickets and claim them.",
+            "9. To add multiple questions at once, pass a JSON array to `question_json` in `/ticket category edit` (existing behavior preserved).",
+            "10. Use `/ticket panel create` (if available) to post the ticket panel in the chosen channel.",
+        ]
+        # Send as ephemeral paginated message (simple single message here)
+        await interaction.response.send_message("\n".join(steps), ephemeral=True)
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
