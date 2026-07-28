@@ -481,25 +481,75 @@ class TicketControlView(discord.ui.View):
         await self.cog.handle_transcript(interaction)
 
 
+class RatingDetailModal(discord.ui.Modal):
+    def __init__(self, cog: "TicketCommands", guild_id: int, ticket_id: int, author_id: int | None = None):
+        super().__init__(title="Ticket Feedback")
+        self.cog = cog
+        self.guild_id = guild_id
+        self.ticket_id = ticket_id
+        self.author_id = author_id
+        self.add_item(discord.ui.TextInput(label="Staff behaviour (1-5)", placeholder="e.g. 5", max_length=3, required=True))
+        self.add_item(discord.ui.TextInput(label="Bot behaviour (1-5)", placeholder="e.g. 5", max_length=3, required=True))
+        self.add_item(discord.ui.TextInput(label="Ease (1-5)", placeholder="e.g. 4", max_length=3, required=True))
+        self.add_item(discord.ui.TextInput(label="Any short feedback?", style=discord.TextStyle.long, required=False))
+
+    async def on_submit(self, interaction: discord.Interaction):
+        vals = [i.value.strip() for i in self.children]
+        try:
+            staff = int(vals[0])
+        except Exception:
+            staff = 0
+        try:
+            bot = int(vals[1])
+        except Exception:
+            bot = 0
+        try:
+            ease = int(vals[2])
+        except Exception:
+            ease = 0
+        comment = vals[3] if len(vals) > 3 else ""
+        payload = {
+            "detailed_rating": {"staff": staff, "bot": bot, "ease": ease, "comment": comment},
+            "detailed_at": _utc_now().isoformat(),
+        }
+        await db.update_ticket(self.guild_id, self.ticket_id, payload)
+        # log to logs channel
+        try:
+            cfg = await db.get_ticket_config(interaction.guild.id)
+            await self.cog._log_action(
+                interaction.guild, cfg,
+                title="📝 Ticket Detailed Feedback",
+                description=f"Ticket #{self.ticket_id} detailed feedback from {interaction.user}",
+                user=interaction.user, color=0x57F287,
+                fields=[("Staff", str(staff), True), ("Bot", str(bot), True), ("Ease", str(ease), True), ("Comment", comment or "-", False)],
+            )
+        except Exception:
+            pass
+        await interaction.response.send_message("Thanks for the feedback!", ephemeral=True)
+
+
 class RatingView(discord.ui.View):
     def __init__(self, cog: "TicketCommands", guild_id: int, ticket_id: int, allowed_user_id: int | None = None):
-        super().__init__(timeout=86400)
+        # 30 minutes timeout
+        super().__init__(timeout=1800)
         self.cog = cog
         self.guild_id = guild_id
         self.ticket_id = ticket_id
         self.allowed_user_id = allowed_user_id
+        # star buttons
         for i in range(1, 6):
             self.add_item(self._make_star(i))
+        # detailed feedback button
+        self.add_item(self._make_detail_button())
 
     def _make_star(self, stars: int) -> discord.ui.Button:
         btn = discord.ui.Button(label=str(stars), emoji="⭐", style=discord.ButtonStyle.secondary, row=0)
 
         async def callback(interaction: discord.Interaction):
-            # only allow the designated user (if set) to rate here
             if self.allowed_user_id and interaction.user.id != int(self.allowed_user_id):
                 await interaction.response.send_message("Only the ticket owner can rate this ticket.", ephemeral=True)
                 return
-            await db.update_ticket(self.guild_id, self.ticket_id, {"rating": stars, "rated_at": _utc_now()})
+            await db.update_ticket(self.guild_id, self.ticket_id, {"rating": stars, "rated_at": _utc_now().isoformat()})
             # log the rating in the logs channel if configured
             try:
                 cfg = await db.get_ticket_config(interaction.guild.id)
@@ -516,6 +566,31 @@ class RatingView(discord.ui.View):
 
         btn.callback = callback
         return btn
+
+    def _make_detail_button(self) -> discord.ui.Button:
+        btn = discord.ui.Button(label="Detailed feedback", style=discord.ButtonStyle.secondary, row=1)
+
+        async def callback(interaction: discord.Interaction):
+            if self.allowed_user_id and interaction.user.id != int(self.allowed_user_id):
+                await interaction.response.send_message("Only the ticket owner can provide feedback.", ephemeral=True)
+                return
+            modal = RatingDetailModal(self.cog, self.guild_id, self.ticket_id, interaction.user.id)
+            await interaction.response.send_modal(modal)
+
+        btn.callback = callback
+        return btn
+
+    async def on_timeout(self):
+        # if no rating or detailed_rating recorded, mark as not rated (zeros)
+        try:
+            ticket = await db.get_ticket(self.guild_id, self.ticket_id)
+            if ticket and ticket.get("rating") is None and not ticket.get("detailed_rating"):
+                await db.update_ticket(self.guild_id, self.ticket_id, {"rating": 0, "rated_at": _utc_now().isoformat(), "detailed_rating": {"staff": 0, "bot": 0, "ease": 0, "comment": "timed_out"}})
+                # log timeout
+                cfg = await db.get_ticket_config(self.cog.bot.get_guild(self.guild_id).id)
+                await self.cog._log_action(self.cog.bot.get_guild(self.guild_id), cfg, title="⏱ Rating Timeout", description=f"Ticket #{self.ticket_id} rating window timed out; saved zeros.", user=self.cog.bot.user, color=0xED4245)
+        except Exception:
+            pass
 
 
 class TicketCommands(commands.Cog):
@@ -1525,7 +1600,7 @@ class TicketCommands(commands.Cog):
                 break
         view = discord.ui.View()
         if options:
-            view.add_item(UsersSelect(self, options))
+            view.add_item(self.UsersSelect(self, options))
         embed = discord.Embed(title="Ticket Overview", color=0x5865F2)
         embed.add_field(name="Total", value=str(total), inline=True)
         embed.add_field(name="Open", value=str(open_count), inline=True)
