@@ -103,11 +103,19 @@ async def on_ready():
         except Exception as e:
             print(f"❌ Error loading {extension}: {e}")
     try:
-        await bot.tree.sync()
-        print("✅ Slash commands synced!")
+        # sync() list return karta hai, usko variable me store kar lo
+        synced_commands = await bot.tree.sync()
+        
+        # Total count print karo
+        print(f"✅ Successfully synced {len(synced_commands)} slash commands!")
+        
+        # Ek-ek karke saare commands terminal me print karo
+        print("📋 Loaded Commands List:")
+        for cmd in synced_commands:
+            print(f"  ➡️ /{cmd.name}")
+            
     except Exception as e:
         print(f"❌ Error syncing slash commands: {e}")
-
     # Saare background tasks ek hi baar start karo
     if not leaderboard_loop.is_running():
         leaderboard_loop.start()
