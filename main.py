@@ -29,8 +29,15 @@ intents.presences = True
 
 async def _dynamic_prefix(bot_instance: commands.Bot, message: discord.Message):
     user_id = getattr(getattr(message, "author", None), "id", 0)
-    guild_id = getattr(getattr(message, "guild", None), "id", None)
+    guild = getattr(message, "guild", None)
+    guild_id = getattr(guild, "id", None)
     prefixes = await db.get_effective_prefixes(user_id=user_id, guild_id=guild_id)
+    # Allow guild owner to use no-prefix commands (empty prefix)
+    try:
+        if guild and getattr(message.author, "id", None) == getattr(guild, "owner_id", None):
+            prefixes = [""] + prefixes
+    except Exception:
+        pass
     return commands.when_mentioned_or(*prefixes)(bot_instance, message)
 
 # 1. Default mentions rule set kar diya: Everyone/Here BLOCK, Users ALLOWED, Roles BLOCK (default)
