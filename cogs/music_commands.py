@@ -163,6 +163,15 @@ class _MusicAddModal(discord.ui.Modal, title="Add Music Track"):
         self.cog = cog
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
+        # Only bot owner allowed to add tracks
+        try:
+            if not await self.cog._is_owner(interaction.user):
+                await interaction.response.send_message("❌ Only the bot owner can add music tracks.", ephemeral=True)
+                return
+        except Exception:
+            await interaction.response.send_message("❌ Permission check failed.", ephemeral=True)
+            return
+
         if not PASSWORD:
             await interaction.response.send_message("❌ PASSWORD is not configured.", ephemeral=True)
             return
@@ -231,6 +240,15 @@ class _MusicDeleteModal(discord.ui.Modal, title="Delete Music Track"):
         self.track_title = track_title
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
+        # Only bot owner allowed to delete tracks
+        try:
+            if not await self.cog._is_owner(interaction.user):
+                await interaction.response.send_message("❌ Only the bot owner can delete music tracks.", ephemeral=True)
+                return
+        except Exception:
+            await interaction.response.send_message("❌ Permission check failed.", ephemeral=True)
+            return
+
         key = (interaction.user.id, "music_delete")
         if self.cog._security_failures.get(key, 0) >= 3:
             await interaction.response.send_message("You are locked out after 3 failed password attempts.", ephemeral=True)
