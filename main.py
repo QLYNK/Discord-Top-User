@@ -112,7 +112,7 @@ async def set_qlynk_activity():
 
     # 4. Custom Activity Configuration
     qlynk_activity = discord.Activity(
-        type=discord.ActivityType.playing,
+        type=discord.ActivityType.listening,  # <-- Yahan "playing" ki jagah "listening" kar diya hai
         name="QLYNK Production™",
         # Ping aur Uptime yahan bold subtitle me sabse mast dikhega!
         details=f"Deep Dey | ⚡ {ping_ms}ms • ⏱️ {uptime_str} 🔥",
@@ -122,13 +122,13 @@ async def set_qlynk_activity():
             "end": end_time
         },
         assets={
-            "large_image": "https://media.discordapp.net/attachments/1503272931390783578/1533836644770254968/4391825b57ea3aa2e658f2e2534f81cb.webp",
+            "large_image": "https://i.postimg.cc/wxt21K5p/4391825b57ea3aa2e658f2e2534f81cb.webp",
             "large_text": f"Deep Dey - QLYNK Production™ ({ping_ms}ms)"
         }
     )
 
     await bot.change_presence(
-        status=discord.Status.online,
+        status=discord.Status.dnd,  # <-- 🔴 Ye Red (Do Not Disturb) dikhayega!
         activity=qlynk_activity
     )
 
