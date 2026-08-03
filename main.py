@@ -89,9 +89,57 @@ def _dashboard_telemetry_bridge(payload: dict):
 keep_alive.register_telemetry_handler(_dashboard_telemetry_bridge)
 KEEPALIVE_URL = "https://deepdey.onrender.com/"
 
+
+# =========================================================
+# QLYNK Production™ Custom Rich Activity Setup
+# =========================================================
+async def set_qlynk_activity():
+    # 1. Real-time Uptime (Hours:Minutes:Seconds) calculate karna
+    uptime_str = "00:00:00"
+    if getattr(bot, "start_time", None):
+        delta = datetime.now() - bot.start_time
+        total_seconds = max(0, int(delta.total_seconds()))
+        hours, remainder = divmod(total_seconds, 3600)
+        minutes, seconds = divmod(remainder, 60)
+        uptime_str = f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+
+    # 2. Real-time Ping (ms me)
+    ping_ms = round(bot.latency * 1000)
+
+    # 3. Timestamps
+    start_time = int(datetime(2026, 5, 11, 0, 0, 0, tzinfo=timezone.utc).timestamp())
+    end_time = int(datetime(2027, 7, 31, 23, 59, 59, tzinfo=timezone.utc).timestamp())
+
+    # 4. Custom Activity Configuration
+    qlynk_activity = discord.Activity(
+        type=discord.ActivityType.playing,
+        name="QLYNK Production™",
+        # Ping aur Uptime yahan bold subtitle me sabse mast dikhega!
+        details=f"Deep Dey | ⚡ {ping_ms}ms • ⏱️ {uptime_str} 🔥",
+        state="Made with QLYNK Production™ | Visit: deepdey.vercel.app",
+        timestamps={
+            "start": start_time,
+            "end": end_time
+        },
+        assets={
+            "large_image": "https://media.discordapp.net/attachments/1503272931390783578/1533836644770254968/4391825b57ea3aa2e658f2e2534f81cb.webp",
+            "large_text": f"Deep Dey - QLYNK Production™ ({ping_ms}ms)"
+        }
+    )
+
+    await bot.change_presence(
+        status=discord.Status.online,
+        activity=qlynk_activity
+    )
+
+
+
 @bot.event
 async def on_ready():
     print(f"✅ Logged in as {bot.user} | Ready to track!")
+    
+    # Ye rha tera QLYNK Production™ wala rich status activation! 🔥
+    await set_qlynk_activity()
     
     # Load Cogs (Setup Commands + Music Engine + Game Engine)
     for extension in (
@@ -132,7 +180,7 @@ async def on_ready():
         flush_buffer.start()
     if not crypto_keepalive.is_running():
         crypto_keepalive.start()
-
+        
 @bot.event
 async def on_app_command_completion(interaction: discord.Interaction, command):
     qualified_name = command.qualified_name.lower()
