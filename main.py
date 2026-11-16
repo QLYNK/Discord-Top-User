@@ -420,7 +420,14 @@ async def process_leaderboard(guild: discord.Guild, settings: dict) -> bool:
     top_users = await db.get_top_users(guild.id, top_count)
     
     if not top_users:
-        await announcement_channel.send("Is period mein kisi ne chat nahi ki! Data reset kar raha hu.")
+        try:
+            await announcement_channel.send("Is period mein kisi ne chat nahi ki! Data reset kar raha hu.")
+        except discord.Forbidden as exc:
+            print(
+                f"[Leaderboard] Discord denied the empty-cycle notice in guild {guild.id}, "
+                f"channel {announcement_channel.id} (403/50013): {exc}"
+            )
+            return False
         await db.reset_activity(guild.id)
         return True
 
@@ -480,30 +487,10 @@ async def process_leaderboard(guild: discord.Guild, settings: dict) -> bool:
     ping_enabled = settings.get("ping_reward_role", True)
     allowed_mentions = discord.AllowedMentions(roles=ping_enabled, users=True, everyone=False)
 
-    # Check channel permissions before attempting to post. Missing permissions should
-    # not terminate the background leaderboard task.
-    bot_member = guild.me
-    permissions = announcement_channel.permissions_for(bot_member)
-    if not permissions.view_channel or not permissions.send_messages:
+    if not channel_permissions.embed_links:
         print(
-            f"[Leaderboard] Missing channel permissions in guild {guild.id} "
-            f"({guild.name}), channel {announcement_channel.id}: "
-            f"view_channel={permissions.view_channel}, "
-            f"send_messages={permissions.send_messages}"
-        )
-        return
-
-    if embed and not permissions.embed_links:
-        print(
-            f"[Leaderboard] Cannot send leaderboard embed in guild {guild.id}, "
-            f"channel {announcement_channel.id}: missing Embed Links permission."
-        )
-        return
-
-    if view and not permissions.send_messages:
-        print(
-            f"[Leaderboard] Cannot send leaderboard view in guild {guild.id}, "
-            f"channel {announcement_channel.id}: missing Send Messages permission."
+            f"[Leaderboard] Missing Embed Links permission in guild {guild.id} "
+            f"({guild.name}), channel {announcement_channel.id}."
         )
         return False
 
