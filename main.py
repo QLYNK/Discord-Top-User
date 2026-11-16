@@ -431,6 +431,13 @@ async def process_leaderboard(guild: discord.Guild, settings: dict) -> bool:
         await db.reset_activity(guild.id)
         return True
 
+    if not channel_permissions.embed_links:
+        print(
+            f"[Leaderboard] Missing Embed Links permission in guild {guild.id} "
+            f"({guild.name}), channel {announcement_channel.id}."
+        )
+        return False
+
     # 3. Purane role members se role hatao
     if role:
         for member in role.members:
@@ -440,13 +447,6 @@ async def process_leaderboard(guild: discord.Guild, settings: dict) -> bool:
                 pass
 
     # 4. Embed Banaiye
-    if not channel_permissions.embed_links:
-        print(
-            f"[Leaderboard] Missing Embed Links permission in guild {guild.id} "
-            f"({guild.name}), channel {announcement_channel.id}."
-        )
-        return False
-
     embed = discord.Embed(title="🏆 Server Activity Leaderboard", color=0x5865F2)
     description = ""
     
