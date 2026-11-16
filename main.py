@@ -363,21 +363,44 @@ async def leaderboard_loop():
         # Check agar interval khatam ho gaya
         due_time = last_reset + timedelta(days=interval_days)
         if now >= due_time:
-            await process_leaderboard(guild, settings)
-            # Update last reset time
+            try:
+                processed = await process_leaderboard(guild, settings)
+            except Exception as exc:
+                print(f"[Leaderboard] Failed to process guild {guild.id} ({guild.name}): {exc}")
+                continue
+
+            # Keep the cycle pending when Discord rejects the announcement.
+            if not processed:
+                continue
+
+            # Update last reset time only after successful processing.
             await db.settings_col.update_one(
                 {"guild_id": guild_id},
                 {"$set": {"last_reset_time": due_time, "last_result_time": now, "pending_cycle_start": False}},
             )
 
-async def process_leaderboard(guild: discord.Guild, settings: dict):
+async def process_leaderboard(guild: discord.Guild, settings: dict) -> bool:
     """Automatically logs bhejta hai, role deta hai aur list post karta hai."""
     announcement_channel = guild.get_channel(settings.get("announcement_channel_id"))
     logs_channel = guild.get_channel(settings.get("logs_channel_id"))
     role = guild.get_role(settings.get("reward_role_id"))
     top_count = settings.get("top_count", 3)
 
-    if not announcement_channel: return
+    if not announcement_channel:
+        return True
+
+    bot_member = guild.me
+    if bot_member is None:
+        print(f"[Leaderboard] Bot member is unavailable in guild {guild.id} ({guild.name}).")
+        return False
+
+    channel_permissions = announcement_channel.permissions_for(bot_member)
+    if not channel_permissions.view_channel or not channel_permissions.send_messages:
+        print(
+            f"[Leaderboard] Missing View Channel/Send Messages permission in "
+            f"guild {guild.id} ({guild.name}), channel {announcement_channel.id}."
+        )
+        return False
 
     # 1. Pehle Logs Bhejo (Agar configured hai)
     all_users_data = await db.get_all_users(guild.id)
@@ -399,7 +422,7 @@ async def process_leaderboard(guild: discord.Guild, settings: dict):
     if not top_users:
         await announcement_channel.send("Is period mein kisi ne chat nahi ki! Data reset kar raha hu.")
         await db.reset_activity(guild.id)
-        return
+        return True
 
     # 3. Purane role members se role hatao
     if role:
@@ -410,6 +433,13 @@ async def process_leaderboard(guild: discord.Guild, settings: dict):
                 pass
 
     # 4. Embed Banaiye
+    if not channel_permissions.embed_links:
+        print(
+            f"[Leaderboard] Missing Embed Links permission in guild {guild.id} "
+            f"({guild.name}), channel {announcement_channel.id}."
+        )
+        return False
+
     embed = discord.Embed(title="🏆 Server Activity Leaderboard", color=0x5865F2)
     description = ""
     
@@ -475,7 +505,7 @@ async def process_leaderboard(guild: discord.Guild, settings: dict):
             f"[Leaderboard] Cannot send leaderboard view in guild {guild.id}, "
             f"channel {announcement_channel.id}: missing Send Messages permission."
         )
-        return
+        return False
 
     try:
         await announcement_channel.send(
@@ -491,10 +521,11 @@ async def process_leaderboard(guild: discord.Guild, settings: dict):
             "Check channel overwrites and bot role permissions. "
             f"Details: {exc}"
         )
-        return
+        return False
 
     # 7. Data Wipe for the new cycle
     await db.reset_activity(guild.id)
+    return True
 
 # Start bot + Keep Alive
 if __name__ == "__main__":
