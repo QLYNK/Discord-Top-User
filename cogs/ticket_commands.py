@@ -665,18 +665,13 @@ class TicketCommands(commands.Cog):
 
     def __init__(self, bot: commands.Bot):
         self.bot = bot
+        self._voice_counter_last_update: dict[int, float] = {}
         self.auto_close_loop.start()
         self.voice_counter_task = self.bot.loop.create_task(self._voice_counter_loop())
 
     def cog_unload(self):
         self.auto_close_loop.cancel()
-        try:
-            self.voice_counter_task.cancel()
-        except Exception:
-            pass
-
-    def cog_unload(self):
-        self.auto_close_loop.cancel()
+        self.voice_counter_task.cancel()
 
     async def cog_load(self):
         self.bot.add_view(TicketControlView(self))
@@ -1859,10 +1854,26 @@ class TicketCommands(commands.Cog):
                         name = name.replace("{date}", now.strftime("%d %b %Y"))
                         name = name.replace("{time}", now.strftime("%H:%M"))
                         name = name[:100]
+                        # Voice channel edits are rate-limited by Discord. Avoid PATCH
+                        # requests when the name is unchanged and throttle each channel.
+                        if name == ch.name:
+                            continue
+
+                        loop = asyncio.get_running_loop()
+                        last_update = self._voice_counter_last_update.get(ch.id, 0.0)
+                        if loop.time() - last_update < 300:
+                            continue
+
                         try:
                             await ch.edit(name=name)
-                        except Exception:
-                            pass
+                            self._voice_counter_last_update[ch.id] = loop.time()
+                        except discord.Forbidden as exc:
+                            print(f"[Ticket Voice Counter] Missing permission to edit channel {ch.id}: {exc}")
+                        except discord.HTTPException as exc:
+                            print(
+                                f"[Ticket Voice Counter] Failed to edit channel {ch.id} "
+                                f"(HTTP {exc.status}): {exc}"
+                            )
             except Exception:
                 pass
             await asyncio.sleep(60)
