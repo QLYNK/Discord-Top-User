@@ -402,23 +402,38 @@ async def process_leaderboard(guild: discord.Guild, settings: dict) -> bool:
         )
         return False
 
-    # 1. Pehle Logs Bhejo (Agar configured hai)
+    # Fetch leaderboard data before sending backups so permission failures
+    # do not cause repeated backup uploads on every retry.
     all_users_data = await db.get_all_users(guild.id)
+    top_users = await db.get_top_users(guild.id, top_count)
+
+    if top_users and not channel_permissions.embed_links:
+        print(
+            f"[Leaderboard] Missing Embed Links permission in guild {guild.id} "
+            f"({guild.name}), channel {announcement_channel.id}."
+        )
+        return False
+
+    # 1. Pehle Logs Bhejo (Agar configured hai)
     if logs_channel:
         last_reset = settings.get("last_reset_time")
         if last_reset and last_reset.tzinfo is None:
             last_reset = last_reset.replace(tzinfo=timezone.utc)
-        
+
         time_range = f"Since: <t:{int(last_reset.timestamp())}:F>" if last_reset else "All time"
-        
-        # Paginated silent embeds + HTML/JSON files bhejne wala naya method call hoga
-        await utils.send_paginated_backup_logs(
-            logs_channel, guild, all_users_data, time_range, "Automatic Cycle Reset"
-        )
+
+        try:
+            await utils.send_paginated_backup_logs(
+                logs_channel, guild, all_users_data, time_range, "Automatic Cycle Reset"
+            )
+        except discord.Forbidden as exc:
+            print(
+                f"[Leaderboard] Discord denied backup logs in guild {guild.id}, "
+                f"logs channel {logs_channel.id} (403/50013): {exc}"
+            )
+            return False
 
     # 2. Top N Users Fetch Karo
-    top_users = await db.get_top_users(guild.id, top_count)
-    
     if not top_users:
         try:
             await announcement_channel.send("Is period mein kisi ne chat nahi ki! Data reset kar raha hu.")
@@ -430,13 +445,6 @@ async def process_leaderboard(guild: discord.Guild, settings: dict) -> bool:
             return False
         await db.reset_activity(guild.id)
         return True
-
-    if not channel_permissions.embed_links:
-        print(
-            f"[Leaderboard] Missing Embed Links permission in guild {guild.id} "
-            f"({guild.name}), channel {announcement_channel.id}."
-        )
-        return False
 
     # 3. Purane role members se role hatao
     if role:
