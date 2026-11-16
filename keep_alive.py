@@ -963,11 +963,11 @@ _HOME_HTML = """
   <title>Discord Top User — Public Discovery Dashboard | Deep Dey</title>
   <meta name="description" content="Discover real-time Discord communities where Discord Top User is active. Explore guild stats, leaderboard automation, music tools, games, and admin utilities.">
   <meta name="keywords" content="Discord bot, leaderboard bot, discord music bot, discord games bot, Deep Dey, FUTURE IITIAN, server analytics">
-  <link rel="canonical" href="https://deepdey.onrender.com/dashboard">
+  <link rel="canonical" href="https://discord-top-user.onrender.com/dashboard">
   <meta property="og:title" content="Discord Top User — Discovery Dashboard">
   <meta property="og:description" content="Live discovery dashboard for Discord-Top-User with searchable server list, live stats, and integration details.">
   <meta property="og:type" content="website">
-  <meta property="og:url" content="https://deepdey.onrender.com/dashboard">
+  <meta property="og:url" content="https://discord-top-user.onrender.com/dashboard">
   <meta name="twitter:card" content="summary_large_image">
   <meta name="twitter:title" content="Discord Top User — Discovery Dashboard">
   <meta name="twitter:description" content="Live searchable Discord server discovery dashboard by Deep Dey.">
@@ -979,7 +979,7 @@ _HOME_HTML = """
     "name": "Discord Top User",
     "applicationCategory": "DeveloperApplication",
     "operatingSystem": "Cross-platform",
-    "url": "https://deepdey.onrender.com/dashboard",
+    "url": "https://discord-top-user.onrender.com/dashboard",
     "description": "A professional Discord bot platform with leaderboard tracking, music administration, games, and utilities.",
     "creator": {
       "@type": "Person",
@@ -1178,11 +1178,11 @@ _DASHBOARD_HTML = """
   <meta name="keywords" content="Discord Top User, Discord bot commands, Discord bot dashboard, how to use Discord bot, music bot, utility bot">
   <meta name="author" content="Deep Dey">
   <meta name="robots" content="index, follow, max-image-preview:large">
-  <link rel="canonical" href="https://deepdey.onrender.com/">
+  <link rel="canonical" href="https://discord-top-user.onrender.com/">
   <meta property="og:type" content="website">
   <meta property="og:title" content="Discord Top User — Homepage">
   <meta property="og:description" content="Learn what Discord Top User does, how to use commands, and where to customize modules.">
-  <meta property="og:url" content="https://deepdey.onrender.com/">
+  <meta property="og:url" content="https://discord-top-user.onrender.com/">
   <meta property="og:site_name" content="Discord Top User">
   <meta name="twitter:card" content="summary_large_image">
   <meta name="twitter:title" content="Discord Top User — Homepage">
@@ -1193,7 +1193,7 @@ _DASHBOARD_HTML = """
     "@context": "https://schema.org",
     "@type": "WebSite",
     "name": "Discord Top User",
-    "url": "https://deepdey.onrender.com/",
+    "url": "https://discord-top-user.onrender.com/",
     "description": "Homepage for the Discord Top User bot platform and dashboards."
   }
   </script>
@@ -1204,7 +1204,7 @@ _DASHBOARD_HTML = """
     "name": "Discord Top User",
     "applicationCategory": "DeveloperApplication",
     "operatingSystem": "Cross-platform",
-    "url": "https://deepdey.onrender.com/",
+    "url": "https://discord-top-user.onrender.com/",
     "description": "A Discord bot platform with leaderboard automation, music management, games, and utilities.",
     "creator": {
       "@type": "Person",
