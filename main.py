@@ -87,7 +87,7 @@ def _dashboard_telemetry_bridge(payload: dict):
 
 
 keep_alive.register_telemetry_handler(_dashboard_telemetry_bridge)
-KEEPALIVE_URL = "https://deepdey.onrender.com/"
+KEEPALIVE_URL = "https://discord-top-user.onrender.com/"
 
 
 # =========================================================
