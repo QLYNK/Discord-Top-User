@@ -438,23 +438,60 @@ async def process_leaderboard(guild: discord.Guild, settings: dict):
 
     # 6. Final Message bhejna
     role_mention = role.mention if role else "Top Members"
-    
+
     # Custom message fetch karna (Jo tumne /setup message_edit me set kiya tha)
     custom_msg = settings.get("custom_announcement")
     if custom_msg:
-        # {role} aur {top_count} ko replace karna
         content = custom_msg.replace("{role}", role_mention).replace("{top_count}", str(top_count))
     else:
         content = f"{role_mention} Here are the top {top_count} most active members for this period!"
-    
+
     # Ping Toggle check karna
     ping_enabled = settings.get("ping_reward_role", True)
-    
-    # Is specific message ke liye temporary permissions overide karna
     allowed_mentions = discord.AllowedMentions(roles=ping_enabled, users=True, everyone=False)
-    
-    # allowed_mentions pass karna zaroori hai
-    await announcement_channel.send(content=content, embed=embed, view=view, allowed_mentions=allowed_mentions)
+
+    # Check channel permissions before attempting to post. Missing permissions should
+    # not terminate the background leaderboard task.
+    bot_member = guild.me
+    permissions = announcement_channel.permissions_for(bot_member)
+    if not permissions.view_channel or not permissions.send_messages:
+        print(
+            f"[Leaderboard] Missing channel permissions in guild {guild.id} "
+            f"({guild.name}), channel {announcement_channel.id}: "
+            f"view_channel={permissions.view_channel}, "
+            f"send_messages={permissions.send_messages}"
+        )
+        return
+
+    if embed and not permissions.embed_links:
+        print(
+            f"[Leaderboard] Cannot send leaderboard embed in guild {guild.id}, "
+            f"channel {announcement_channel.id}: missing Embed Links permission."
+        )
+        return
+
+    if view and not permissions.send_messages:
+        print(
+            f"[Leaderboard] Cannot send leaderboard view in guild {guild.id}, "
+            f"channel {announcement_channel.id}: missing Send Messages permission."
+        )
+        return
+
+    try:
+        await announcement_channel.send(
+            content=content,
+            embed=embed,
+            view=view,
+            allowed_mentions=allowed_mentions,
+        )
+    except discord.Forbidden as exc:
+        print(
+            f"[Leaderboard] Discord denied announcement in guild {guild.id}, "
+            f"channel {announcement_channel.id} (403/50013). "
+            "Check channel overwrites and bot role permissions. "
+            f"Details: {exc}"
+        )
+        return
 
     # 7. Data Wipe for the new cycle
     await db.reset_activity(guild.id)
