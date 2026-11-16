@@ -495,13 +495,6 @@ async def process_leaderboard(guild: discord.Guild, settings: dict) -> bool:
     ping_enabled = settings.get("ping_reward_role", True)
     allowed_mentions = discord.AllowedMentions(roles=ping_enabled, users=True, everyone=False)
 
-    if not channel_permissions.embed_links:
-        print(
-            f"[Leaderboard] Missing Embed Links permission in guild {guild.id} "
-            f"({guild.name}), channel {announcement_channel.id}."
-        )
-        return False
-
     try:
         await announcement_channel.send(
             content=content,
